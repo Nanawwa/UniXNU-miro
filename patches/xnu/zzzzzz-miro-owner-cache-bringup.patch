@@ -1,0 +1,939 @@
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -7035,6 +7035,13 @@
+ volatile int native_owner_cache_readonly = 0;
+ volatile int native_owner_cache_authorized = 0;
+ volatile int native_owner_cache_root_recheck = 0;
++volatile int native_owner_cache_path_mask = 0;
++char native_owner_cache_root_names[96] = {0};
++char native_owner_cache_root_raw[49] = {0};
++char native_owner_cache_lib_names[64] = {0};
++char native_owner_cache_dyld_names[96] = {0};
++char native_owner_cache_names_src[16] = {0};
++volatile uint32_t native_owner_cache_file_mask = 0;
+ volatile uint64_t native_owner_cache_actual_mount_flags = 0;
+ volatile uintptr_t native_owner_cache_original_root = 0;
+ volatile uintptr_t native_owner_cache_current_root = 0;
+@@ -7049,6 +7056,44 @@
+ 	__asm__ volatile("" : : "r"(status), "r"(authorized) : "memory");
+ }
+ 
++static void
++miro_cache_list_dir(const char *path, char *out, size_t size)
++{
++	out[0] = 0;
++	vnode_t vp = NULLVP;
++	if (vnode_lookup(path, 0, &vp, vfs_context_current()) != 0) {
++		return;
++	}
++	char buf[1024];
++	struct uio *uio = uio_create(1, 0, UIO_SYSSPACE, UIO_READ);
++	if (uio) {
++		uio_addiov(uio, (user_addr_t)(uintptr_t)buf, sizeof(buf));
++		int eofflag = 0, numdirent = 0;
++		if (VNOP_READDIR(vp, uio, 0, &eofflag, &numdirent, vfs_context_current()) == 0) {
++			size_t used = sizeof(buf) - uio_resid(uio), off = 0, o = 0;
++			while (off + 9 <= used) {
++				struct { uint32_t ino; uint16_t reclen; uint8_t type; uint8_t namlen; char name[1]; } *dp =
++				    (void *)(buf + off);
++				if (dp->reclen < 9 || off + dp->reclen > used) break;
++				size_t n = dp->namlen;
++				bool dot = (n == 1 && dp->name[0] == '.');
++				bool dotdot = (n == 2 && dp->name[0] == '.' && dp->name[1] == '.');
++				if (n && off + 8 + n <= used && !dot && !dotdot) {
++					if (o + n + 2 < size) {
++						if (o) out[o++] = ',';
++						memcpy(out + o, dp->name, n);
++						o += n;
++					}
++				}
++				off += dp->reclen;
++			}
++			out[o] = 0;
++		}
++		uio_free(uio);
++	}
++	vnode_put(vp);
++}
++
+ static int
+ native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
+ {
+@@ -7062,11 +7107,42 @@
+ #endif
+ 	const char *mountpoint = "/";
+ #else
++	/* miro bring-up: use the first existing cryptex mount point; the dyld path follows it. */
+ 	const char *mountpoint = "/private/preboot";
++	{
++		static const char *const candidates[] = { "/System/Cryptexes/OS", "/private/preboot/Cryptexes/OS", "/private/preboot" };
++		vnode_t probe = NULLVP;
++		for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
++			if (vnode_lookup(candidates[i], 0, &probe, vfs_context_current()) == 0) {
++				vnode_put(probe);
++				mountpoint = candidates[i];
++				break;
++			}
++		}
++	}
+ #endif
+-#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
+-	const char *environment = "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
+-#endif
++	char environment[192];
++	snprintf(environment, sizeof(environment),
++	    "DYLD_SHARED_CACHE_DIR=%s/System/Library/Caches/com.apple.dyld", mountpoint);
++	/* l34: dyld knows why it is not mapping the cache; ask it. Gated on a
++	 * boot argument so an ordinary boot keeps the console quiet. */
++	char environment_print[64];
++	char environment_trace[64];
++	uint32_t dyld_verbose = 0;
++	int dyld_verbose_on = PE_parse_boot_argn("miro-dyld-verbose", &dyld_verbose,
++	    sizeof(dyld_verbose)) && dyld_verbose;
++	if (dyld_verbose_on) {
++		snprintf(environment_print, sizeof(environment_print), "DYLD_PRINT_ENV=1");
++		snprintf(environment_trace, sizeof(environment_trace),
++		    "DYLD_PRINT_SEARCHING=1");
++	} else {
++		environment_print[0] = 0;
++		environment_trace[0] = 0;
++	}
++	/* miro l33: the union root resolves that directory already (MIRO-STAT[3]
++	 * reads it from the SystemOS volume), so dyld can take the cache from the
++	 * variable instead of asking ignition for a Preboot volume we do not have.
++	 * Pong/HackiOS hands dyld the same variable against its preboot mount. */
+ 	vnode_t original_os_root = rootvnode;
+ 	native_owner_cache_original_root = (uintptr_t)original_os_root;
+ 	mount_t root_mount = vnode_mount(original_os_root);
+@@ -7082,14 +7158,14 @@
+ 	uint64_t mount_flags = MNT_RDONLY;
+ 	uint16_t mount_mode = 1;
+ 	uint32_t anonymous_owner = 99;
+-#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
+ #if defined(XNU_OWNER_CRYPTEX_FILES) && XNU_OWNER_CRYPTEX_FILES
+ 	const char *fallback = "DYLD_FALLBACK_LIBRARY_PATH=/private/preboot/usr/lib";
+-	user64_addr_t environment_vector[3] = {scratch + 0x400, scratch + 0x600, USER_ADDR_NULL};
++	user64_addr_t environment_vector[5];
+ #else
+-	user64_addr_t environment_vector[2] = {scratch + 0x400, USER_ADDR_NULL};
+-#endif
++	user64_addr_t environment_vector[4];
+ #endif
++	/* l34: filled in explicitly later, because dyld stops at the first NULL and
++	 * a fixed initialiser put the new strings past the terminator. */
+ 	struct mount_args request = {.type = scratch + 0x100, .path = scratch + 0x120,
+ 	    .flags = MNT_RDONLY, .data = scratch + 0x200};
+ 	request.flags = (int)mount_flags;
+@@ -7141,17 +7217,140 @@
+ 	cache_authorized = cache_authorized && native_union;
+ #endif
+ 	if (!cache_authorized) { error = EAUTH; goto done; }
+-	native_owner_cache_stage = 5;
++	/* Report which dyld cache layout the mounted cryptex actually carries. */
++	{
++		static const char *const probes[] = {
++			"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
++			"/System/Library/dyld/dyld_shared_cache_arm64e",
++			"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e",
++		};
++		unsigned mask = 0;
++		for (unsigned i = 0; i < sizeof(probes) / sizeof(probes[0]); i++) {
++			char probe_path[192];
++			vnode_t probe_vp = NULLVP;
++			snprintf(probe_path, sizeof(probe_path), "%s%s", mountpoint, probes[i]);
++			if (vnode_lookup(probe_path, 0, &probe_vp, vfs_context_current()) == 0) {
++				mask |= 1u << i;
++				vnode_put(probe_vp);
++			}
++		}
++		native_owner_cache_path_mask = (int)mask;
++		/* List System/Library and the dyld directory so the real cache location is visible. */
++		{
++			char list_path[192];
++			snprintf(list_path, sizeof(list_path), "%s/System/Library", mountpoint);
++			miro_cache_list_dir(list_path, native_owner_cache_lib_names,
++			    sizeof(native_owner_cache_lib_names));
++			snprintf(list_path, sizeof(list_path), "%s/System/Library/dyld", mountpoint);
++			miro_cache_list_dir(list_path, native_owner_cache_dyld_names,
++			    sizeof(native_owner_cache_dyld_names));
++			if (native_owner_cache_dyld_names[0]) {
++				snprintf(native_owner_cache_names_src, sizeof(native_owner_cache_names_src), "dyld");
++			} else {
++				snprintf(list_path, sizeof(list_path),
++				    "%s/System/Library/Caches/com.apple.dyld", mountpoint);
++				miro_cache_list_dir(list_path, native_owner_cache_dyld_names,
++				    sizeof(native_owner_cache_dyld_names));
++				snprintf(native_owner_cache_names_src, sizeof(native_owner_cache_names_src), "caches");
++			}
++		}
+ #if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
++		const char *cache_dir = "/System/Library/Caches/com.apple.dyld";
++		if (!(mask & 1) && (mask & 2)) {
++			cache_dir = "/System/Library/dyld";
++		} else if (!(mask & 1) && !(mask & 2) && (mask & 4)) {
++			cache_dir = "/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld";
++		}
++		snprintf(environment, sizeof(environment), "DYLD_SHARED_CACHE_DIR=%s%s", mountpoint, cache_dir);
++#endif
++		/* miro bring-up: the arm64e probes above can never match this cryptex, so ask
++		 * the absolute questions dyld itself asks of the composed root. A root that
++		 * carries no cryptex content then shows up as an empty file mask. */
++		{
++			static const char *const files[] = {
++				"/usr/lib/libSystem.B.dylib",
++				"/usr/lib/dyld",
++				"/sbin/launchd",
++				"/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++				"/System/Library/dyld/dyld_shared_cache_arm64",
++			};
++			unsigned fmask = 0;
++			for (unsigned i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
++				vnode_t fvp = NULLVP;
++				if (vnode_lookup(files[i], 0, &fvp, vfs_context_current()) == 0) {
++					fmask |= 1u << i;
++					vnode_put(fvp);
++				}
++			}
++			native_owner_cache_file_mask = fmask;
++		}
++	}
++	/* miro l29: which layer actually answers each path. Same device as the
++	 * SystemOS volume = the union answered; the root device = the fallback ran. */
++	{
++		static const char *const probe[] = {
++		    "/usr/lib/libSystem.B.dylib",
++		    "/usr/lib/dyld",
++		    "/sbin/launchd",
++		    "/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64",
++		    "/System/Library/dyld/dyld_shared_cache_arm64",
++		};
++		for (unsigned i = 0; i < sizeof(probe) / sizeof(probe[0]); i++) {
++			vnode_t vp = NULLVP;
++			int lerr = vnode_lookup(probe[i], 0, &vp, vfs_context_current());
++			if (lerr || !vp) {
++				printf("MIRO-STAT[%u] %s -> err %d\n", i, probe[i], lerr);
++			} else {
++				mount_t m = vnode_mount(vp);
++				dev_t d = vfs_devvp(m) ? vnode_specrdev(vfs_devvp(m)) : NODEV;
++				printf("MIRO-STAT[%u] %s -> dev %d flags 0x%llx\n",
++				    i, probe[i], (int)d, (unsigned long long)vfs_flags(m));
++				vnode_put(vp);
++			}
++		}
++		printf("MIRO-STAT systemos dev %d\n", (int)selected);
++	}
++	native_owner_cache_stage = 5;
++	/* l35: what launchd is actually about to receive. */
++	printf("MIRO-ENV verbose=%d cache=%s print=[%s] trace=[%s]\n",
++	    dyld_verbose_on, environment, environment_print, environment_trace);
++	printf("MIRO-ENV scratch: env=0x%llx print=0x%llx trace=0x%llx\n",
++	    (unsigned long long)(scratch + 0x400),
++	    (unsigned long long)(scratch + 0x700),
++	    (unsigned long long)(scratch + 0x800));
++	/* l34: build the vector in order, terminator last. */
++	if (dyld_verbose_on) {
++		if (copyout(environment_print, scratch + 0x700, strlen(environment_print) + 1) != 0 ||
++		    copyout(environment_trace, scratch + 0x800, strlen(environment_trace) + 1) != 0) goto done;
++	}
++#if defined(XNU_OWNER_CRYPTEX_FILES) && XNU_OWNER_CRYPTEX_FILES
++	environment_vector[0] = scratch + 0x400;
++	environment_vector[1] = scratch + 0x600;
++	if (dyld_verbose_on) {
++		environment_vector[2] = scratch + 0x700;
++		environment_vector[3] = scratch + 0x800;
++		environment_vector[4] = USER_ADDR_NULL;
++	} else {
++		environment_vector[2] = USER_ADDR_NULL;
++	}
++#else
++	environment_vector[0] = scratch + 0x400;
++	if (dyld_verbose_on) {
++		environment_vector[1] = scratch + 0x700;
++		environment_vector[2] = scratch + 0x800;
++		environment_vector[3] = USER_ADDR_NULL;
++	} else {
++		environment_vector[1] = USER_ADDR_NULL;
++	}
++#endif
+ 	if ((error = copyout(environment, environment_vector[0], strlen(environment) + 1)) != 0 ||
+ 	    (error = copyout(environment_vector, scratch + 0x500, sizeof(environment_vector))) != 0) goto done;
+ #if defined(XNU_OWNER_CRYPTEX_FILES) && XNU_OWNER_CRYPTEX_FILES
+ 	if ((error = copyout(fallback, scratch + 0x600, strlen(fallback) + 1)) != 0) goto done;
+ #endif
+ 	*envp = scratch + 0x500;
+-#else
+-	*envp = USER_ADDR_NULL;
+-#endif
++	/* miro l33: the vector is delivered in union mode too, so dyld gets
++	 * DYLD_SHARED_CACHE_DIR instead of asking ignition for a Preboot volume. */
+ 	native_owner_cache_stage = 6;
+ done:
+ 	if (mounted_root) vnode_put(mounted_root);
+@@ -7165,11 +7364,22 @@
+ #endif
+ #if defined(XNU_OWNER_CACHE_STARTUP) && XNU_OWNER_CACHE_STARTUP
+ 	if (!error && cache_authorized && root_recheck) {
+-		/* Original dyld bit 3 selects no ignition; the owner chain and actual
+-		 * readonly mounts above supply image authentication in this mode. */
+-		dyld_flags |= UINT64_C(8);
++		/* Original dyld bit 3 selects no ignition. miro l32: that bit is now a
++		 * decision instead of a side effect, because dyld's own strings show the
++		 * consequence ("ignition disabled" then "no shared cache in cryptex").
++		 * Default stays as before; miro-dyld-ignition=1 lets dyld use ignition.
++		 * The config gate is kept so DATA_MOUNT -> BOOT_MANIFEST -> CACHE_STARTUP
++		 * still builds. */
++		uint32_t allow_ignition = 0;
++		int ignition_opt_in = PE_parse_boot_argn("miro-dyld-ignition", &allow_ignition,
++		    sizeof(allow_ignition)) && allow_ignition;
++		if (!ignition_opt_in) {
++			dyld_flags |= UINT64_C(8);
++		}
+ 		commpage_update_dyld_flags(dyld_flags);
+ 		native_owner_cache_dyld_flags = dyld_flags;
++		printf("MIRO-DYLDFLAGS ignition_opt_in=%d flags=0x%llx (bit3=no-ignition)\n",
++		    ignition_opt_in, (unsigned long long)dyld_flags);
+ 	}
+ #endif
+ 	native_owner_cache_authorized = cache_authorized;
+@@ -7979,6 +8189,109 @@
+ 	vnode_put(vp);
+ }
+ 
++/*
++ * miro bring-up (l14): the Data directory tree.
++ *
++ * The 8 GiB Data container is made with mkapfs, so it ships none of the Apple
++ * seed's tree; the previous 32 MiB seed carried 206 empty directories and hid
++ * this. launchd, init_featureflags and tzinit all assume the tree exists, and
++ * the sibling K60 port recorded the same three failures. Parents precede
++ * children because mkdir does not recurse.
++ *
++ * A failed path is recorded, never fatal: a partial boot is better than a panic.
++ */
++static const char *const native_data_dirs[] = {
++	"/private/var/keybags",
++	"/private/var/log",
++	"/private/var/logs",
++	"/private/var/log/com.apple.xpc.launchd",
++	"/private/var/codes",
++	"/private/var/tmp",
++	"/private/var/run",
++	"/private/var/mobile",
++	"/private/var/mobile/Library",
++	"/private/var/mobile/Library/Preferences",
++	"/private/var/mobile/Library/Caches",
++	"/private/var/mobile/Library/Logs",
++	"/private/var/mobile/Documents",
++	"/private/var/mobile/Media",
++	"/private/var/mobile/Containers",
++	"/private/var/preferences",
++	"/private/var/db",
++	"/private/var/db/timezone",
++	"/private/var/db/lockdown",
++	"/private/var/containers",
++	"/private/var/containers/Bundle",
++	"/private/var/containers/Data",
++	"/private/var/containers/Data/System",
++	"/private/var/containers/Data/Application",
++	"/private/var/containers/Shared",
++	"/private/var/containers/Shared/SystemGroup",
++	"/private/var/containers/Temp",
++	"/private/var/root",
++	"/private/var/root/Library",
++	"/private/var/wireless",
++	"/private/var/installd",
++	"/private/var/installd/Library",
++	"/private/var/installd/Library/Caches",
++	/* l24: named by the boot log. Parents before children; mkdir has no recursion. */
++	"/private/var/hardware",
++	"/private/var/hardware/FactoryData",
++	"/private/var/hardware/FactoryData/System",
++	"/private/var/hardware/FactoryData/System/Library",
++	"/private/var/hardware/FactoryData/System/Library/Caches",
++	"/private/var/hardware/FactoryData/System/Library/Caches/com.apple.factorydata",
++	"/private/var/db/timezone/zoneinfo",
++	"/private/var/db/com.apple.xpc.roleaccountd.staging",
++	"/private/var/db/uuidtext",
++	"/private/var/db/diagnostics",
++	"/private/var/mobile/Library/Logs/CrashReporter",
++	"/private/var/mobile/Library/Logs/CrashReporter/DiagnosticLogs",
++	"/private/var/MobileSoftwareUpdate",
++	"/private/var/PersonaVolumes",
++};
++
++static void
++native_owner_data_mkdirs(proc_t p, user_addr_t scratch)
++{
++	/* The scratch is one 4 KiB page and the mount arguments end well below
++	 * 0xe00; the existing helpers use 0xa00 and 0xc00. */
++	const user_addr_t where = scratch + 0xe00;
++	const size_t room = 0x1000 - 0xe00;
++	unsigned made = 0, existed = 0, failed = 0;
++	const char *first_failure = NULL;
++	int first_error = 0;
++	for (unsigned i = 0; i < sizeof(native_data_dirs) / sizeof(native_data_dirs[0]); i++) {
++		const char *path = native_data_dirs[i];
++		size_t length = strlen(path) + 1;
++		if (length > room) {
++			++failed;
++			if (!first_failure) { first_failure = path; first_error = ENAMETOOLONG; }
++			continue;
++		}
++		struct mkdir_args request = { .path = where, .mode = 0755 };
++		int32_t result = 0;
++		int error = copyout(path, where, length);
++		if (!error) {
++			error = mkdir(p, &request, &result);
++		}
++		if (!error) {
++			++made;
++		} else if (error == EEXIST) {
++			++existed;
++		} else {
++			++failed;
++			if (!first_failure) { first_failure = path; first_error = error; }
++		}
++	}
++	printf("MIRO-DIRS made=%u existed=%u failed=%u",
++	    made, existed, failed);
++	if (first_failure) {
++		printf(" first=%s err=%d", first_failure, first_error);
++	}
++	printf("\n");
++}
++
+ static int
+ native_owner_data_prepare(proc_t p, user_addr_t scratch)
+ {
+@@ -8037,7 +8350,17 @@
+ 	if (actual != device || (vfs_flags(data_mount) & MNT_RDONLY) ||
+ 	    strcmp(vfs_statfs(data_mount)->f_fstypename, "apfs")) error = EINVAL;
+ 	if (!error) native_owner_data_stage = 4;
++	/* miro l14: the mkapfs Data container ships no tree; build it now, before
++	 * launchd and the boot tasks assume it. */
++	if (!error) native_owner_data_mkdirs(p, scratch);
+ 	if (!error) native_gpu_addon_prepare(p, scratch);
++	/* miro l19: /private/preboot is what the launchd boot tasks look for
++	 * (BindFS binds .../usr/standalone/firmware through it). It used to be
++	 * built only inside native_gpu_addon_prepare, which returns unless
++	 * sheng-gpu-addon=1, so without the addon the path never appeared and
++	 * the boot tasks failed with ENOENT. The cryptex view records its own
++	 * stage and status and never panics, so it can run on every boot. */
++	if (!error) native_cryptex_os_view(p, scratch);
+ 	if (!error) native_staged_apps_prepare(p, scratch, data_mount);
+ done:
+ 	if (data_root) vnode_put(data_root);
+@@ -8129,7 +8452,14 @@
+ 	 */
+ 	set_security_token(p, proc_ucred_unsafe(p));
+ 
+-	return execve(p, &init_exec_args, retval);
++	{
++		extern void miro_log_flush(const char *);
++		extern volatile long long miro_log_value;
++		int miro_exec_error = execve(p, &init_exec_args, retval);
++		miro_log_value = (long long)miro_exec_error;
++		miro_log_flush("execve-returned");
++		return miro_exec_error;
++	}
+ }
+ 
+ static const char * init_programs[] = {
+@@ -8175,6 +8505,65 @@
+ load_init_program(proc_t p)
+ {
+ 	boot_progress_stage("load_init_program enter");
++	{
++		extern void miro_log_flush(const char *);
++		extern int native_ufs_log_open(uint64_t *, uint64_t *, const char **);
++		extern int native_ufs_log_probe(uint32_t, const char *);
++		extern volatile int miro_log_enabled;
++		extern volatile int miro_log_open_status;
++		extern volatile uint64_t miro_log_first_lba;
++		extern volatile long long miro_log_value;
++		extern void boot_log_start(void);
++		uint64_t log_first = 0, log_blocks = 0;
++		const char *log_why = NULL;
++		if (!miro_log_enabled) {
++			int opened = native_ufs_log_open(&log_first, &log_blocks, &log_why);
++			native_ufs_log_probe(opened ? 0x100u : (log_why ? 0xfffffffeu : 0xffffffffu), log_why);
++			miro_log_open_status = opened ? 1 : (log_why ? -1 : -2);
++			miro_log_first_lba = log_first;
++			if (opened) {
++				miro_log_enabled = 1;
++			}
++		}
++		/* miro l16: the previous boot's crash record, read from the oops
++		 * partition and printed here, before userspace can overwrite it. */
++		{
++			extern int native_ufs_panic_read(char *, unsigned long, unsigned long *)
++			    __attribute__((weak_import));
++			extern char miro_prev_text[];
++			extern volatile unsigned miro_prev_len;
++			extern volatile int miro_prev_state;
++			if (&native_ufs_panic_read) {
++				unsigned long crc_state = 0xffffffff;
++				int got = native_ufs_panic_read(miro_prev_text, 7 * 1024, &crc_state);
++				if (got > 0) {
++					miro_prev_len = (unsigned)got;
++					miro_prev_state = (crc_state == 0) ? 1 : 2;
++					printf("MIRO-PREV crc=%s bytes=%d\n%s\n",
++					    (crc_state == 0) ? "ok" : "bad", got, miro_prev_text);
++				} else if (got == 0) {
++					miro_prev_state = 3;
++					printf("MIRO-PREV none\n");
++				} else {
++					miro_prev_state = 4;
++					printf("MIRO-PREV unavailable\n");
++				}
++			}
++		}
++		boot_log_start();
++		/* l30: miro-autoreset=<seconds> returns to the bootloader on its own. */
++		{
++			extern void native_ufs_autoreset_arm(uint32_t) __attribute__((weak_import));
++			uint32_t seconds = 0;
++			if (&native_ufs_autoreset_arm &&
++			    PE_parse_boot_argn("miro-autoreset", &seconds, sizeof(seconds)) && seconds) {
++				native_ufs_autoreset_arm(seconds);
++				printf("MIRO-AUTORESET armed for %u s\n", seconds);
++			}
++		}
++		miro_log_value = 0x100;
++		miro_log_flush("exec-enter");
++	}
+ 	uint32_t i;
+ 	int error;
+ 	vm_map_t map = current_map();
+@@ -8187,7 +8576,9 @@
+ 	boot_progress_stage("SystemOS mount enter");
+ 	int cache_error = native_owner_cache_prepare(p, (user_addr_t)scratch_addr, &init_envp);
+ 	boot_progress_stage("SystemOS mount returned");
+-	if (cache_error) panic("offline owner SystemOS mount failed: %d", cache_error);
++	if (cache_error) panic("offline owner SystemOS mount failed: %d stage %d device %s mount %d",
++	    cache_error, native_owner_cache_stage, native_owner_cache_device_path,
++	    native_owner_cache_mount_status);
+ #endif
+ #if defined(XNU_OWNER_DATA_MOUNT) && XNU_OWNER_DATA_MOUNT
+ 	boot_progress_stage("Data mount enter");
+@@ -8206,6 +8597,133 @@
+ 	(void) memorystatus_init_at_boot_snapshot();
+ #endif /* CONFIG_MEMORYSTATUS */
+ 
++		/* miro l24: condensed view of the previous boot's console. The full text
++		 * sits in the oops ring (miro l23); this pulls out the lines that decide a
++		 * boot, so one photograph carries what used to take several. */
++		{
++			extern int native_ufs_oops_log_read(char *, uint32_t, uint32_t *)
++			    __attribute__((weak_import));
++			if (&native_ufs_oops_log_read) {
++				static char digest[64 * 1024];
++				uint32_t rounds = 0;
++				int got = native_ufs_oops_log_read(digest, sizeof(digest) - 1, &rounds);
++				if (got > 0) {
++					digest[got] = 0;
++					static const char *const keys[] = {
++					    "ERROR", "failed", "crash", "denied", "ENOENT",
++					    "ENOSPC", "panic", "timeout", "deny", "refus",
++					};
++					static char seen[24][128];
++					unsigned seen_count = 0, printed = 0;
++					extern char miro_digest_text[];
++					extern volatile unsigned miro_digest_len;
++					extern volatile int miro_digest_ready;
++					extern volatile int native_owner_cache_stage;
++					extern volatile int native_owner_cache_status;
++					extern volatile uint32_t native_owner_cache_file_mask;
++					/* miro l26: shared-cache state with the digest. Mask bits:
++					 * 0 libSystem.B.dylib, 1 dyld, 2 launchd,
++					 * 3 Caches/com.apple.dyld/dyld_shared_cache_arm64,
++					 * 4 dyld/dyld_shared_cache_arm64. */
++					{
++						/* l27: keep the cache line for the replay, with the digest. */
++						extern char miro_digest_text[];
++						extern volatile unsigned miro_digest_len;
++						char cache_line[160];
++						int cache_len = snprintf(cache_line, sizeof(cache_line),
++						    "D|CACHE stage=%d status=%d mask=0x%x bits=%d%d%d%d%d\n",
++						    native_owner_cache_stage, native_owner_cache_status,
++						    native_owner_cache_file_mask,
++						    (native_owner_cache_file_mask >> 0) & 1,
++						    (native_owner_cache_file_mask >> 1) & 1,
++						    (native_owner_cache_file_mask >> 2) & 1,
++						    (native_owner_cache_file_mask >> 3) & 1,
++						    (native_owner_cache_file_mask >> 4) & 1);
++						if (cache_len > 0) {
++							printf("%.*s", cache_len, cache_line);
++							for (int q = 0; q < cache_len && miro_digest_len < 8000; q++) {
++								miro_digest_text[miro_digest_len++] = cache_line[q];
++							}
++						}
++					}
++					printf("MIRO-DIGEST rounds=%u bytes=%d\n", rounds, got);
++					for (int at = 0; at < got && printed < 24; ) {
++						int end = at;
++						while (end < got && digest[end] != '\n') end++;
++						int len = end - at;
++						if (len > 0 && len < 120) {
++							int useful = 0;
++							for (unsigned k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
++								for (int i = 0; i + (int)strlen(keys[k]) <= len; i++) {
++									if (strncmp(digest + at + i, keys[k], strlen(keys[k])) == 0) {
++										useful = 1;
++										break;
++									}
++								}
++								if (useful) break;
++							}
++							if (useful) {
++								int dup = 0;
++								for (unsigned s = 0; s < seen_count; s++) {
++									if (strncmp(seen[s], digest + at, len) == 0 && seen[s][len] == 0) {
++										dup = 1;
++										break;
++									}
++								}
++								if (!dup && seen_count < 24) {
++									memcpy(seen[seen_count], digest + at, len);
++									seen[seen_count][len] = 0;
++									seen_count++;
++									extern char miro_digest_text[];
++									extern volatile unsigned miro_digest_len;
++									if (miro_digest_len + len + 8 < 8000) {
++										miro_digest_text[miro_digest_len++] = 'D';
++										miro_digest_text[miro_digest_len++] = '|';
++										for (int q = 0; q < len; q++) {
++											miro_digest_text[miro_digest_len++] = digest[at + q];
++										}
++										miro_digest_text[miro_digest_len++] = '\n';
++									}
++									printf("D|%.120s\n", seen[seen_count - 1]);
++									printed++;
++								}
++							}
++						}
++						at = end + 1;
++					}
++					extern char miro_digest_text[];
++					extern volatile unsigned miro_digest_len;
++					extern volatile int miro_digest_ready;
++					miro_digest_text[miro_digest_len] = 0;
++					/* l31: split into framebuffer rows; the first four matches win. */
++					{
++						extern char miro_digest_rows[4][112];
++						extern volatile int miro_digest_row_count;
++						int row = 0, at = 0;
++						while (at < (int)miro_digest_len && row < 4) {
++							int end = at;
++							while (end < (int)miro_digest_len && miro_digest_text[end] != '\n') end++;
++							int len = end - at;
++							if (len > 0) {
++								int copy = len > 110 ? 110 : len;
++								for (int i = 0; i < copy; i++) {
++									miro_digest_rows[row][i] = miro_digest_text[at + i];
++								}
++								miro_digest_rows[row][copy] = 0;
++								row++;
++							}
++							at = end + 1;
++						}
++						miro_digest_row_count = row;
++					}
++					miro_digest_ready = 1;
++					printf("MIRO-DIGEST end lines=%u\n", printed);
++				} else {
++					printf("MIRO-DIGEST empty\n");
++				}
++			}
++		}
++
+ #if (DEBUG || DEVELOPMENT) && defined(XNU_NATIVE_AIR_INIT) && XNU_NATIVE_AIR_INIT
+ 	int offline_air = 0;
+ 	if (PE_parse_boot_argn("offline-air-init", &offline_air, sizeof(offline_air)) && offline_air) {
+@@ -8696,6 +9214,17 @@
+ 	 * which is unexpected but security framework does not
+ 	 * approve of exec, kill and return immediately.
+ 	 */
++	/* miro bring-up: miro-no-cs=1 clears code-signing MAC refusals; unsecured
++	 * boots keep the policy intact.
++	 */
++	int miro_no_cs = 0;
++	if (PE_parse_boot_argn("miro-no-cs", &miro_no_cs, sizeof(miro_no_cs)) && miro_no_cs) {
++		imgp->ip_mac_return = 0;
++		if (imgp->ip_cs_error != OS_REASON_NULL) {
++			os_reason_free(imgp->ip_cs_error);
++			imgp->ip_cs_error = OS_REASON_NULL;
++		}
++	}
+ 	if (imgp->ip_mac_return != 0) {
+ 		boot_progress_process_stage(proc_getpid(p),p->p_name,"exec MAC policy REFUSED");
+ 		KERNEL_DEBUG_CONSTANT(BSDDBG_CODE(DBG_BSD_PROC, BSD_PROC_EXITREASON_CREATE) | DBG_FUNC_NONE,
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1478,6 +1478,78 @@
+  * to zombie, and unlink proc from allproc and parent's lists.  Save exit
+  * status and rusage for wait().  Check for child processes and orphan them.
+  */
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++/*
++ * miro bring-up (l12): name the volume that reports ENOSPC.
++ *
++ * l10 reached userland and launchd then looped on
++ *   fx_occur_internal(...): kernel_task: ENOSPC ... free_blacks 207
++ * with max_blocks halving all the way down. APFS prints no device or mount
++ * point, so which volume runs out is still an inference. This prints one line
++ * per mounted volume: geometry, free space and where it is mounted.
++ *
++ * Fired once, at the first process whose death means the boot failed. In l10
++ * launchd itself stays alive and SpringBoard and watchdogd die in a loop, so
++ * the initproc-only marker never printed.
++ *
++ * The call runs where the same path already calls sync() (which itself
++ * iterates the mount table), so a second vfs_iterate() here is safe.
++ */
++extern volatile int native_owner_data_stage;
++extern volatile int native_owner_data_status;
++extern volatile int native_owner_data_readonly;
++extern uint64_t native_owner_data_seed_size;
++extern uint64_t native_owner_data_seed_base;
++extern char native_owner_data_device_path[64];
++extern volatile uint64_t native_ram_block_bytes;
++extern volatile uint32_t native_data_persist_state;
++extern volatile uint64_t native_data_persist_pages;
++extern volatile uint64_t native_data_persist_first_lba;
++extern volatile uint64_t native_data_persist_errors;
++
++static int
++miro_mount_report_cb(mount_t mp, void *arg)
++{
++	struct vfsstatfs *sb = vfs_statfs(mp);
++	unsigned *seen = (unsigned *)arg;
++	if (sb) {
++		printf("MIRO-VOL[%u] type=%s mnt=%s from=%s bsize=%u blocks=%llu free=%llu avail=%llu flags=0x%llx\n",
++		    *seen, sb->f_fstypename, sb->f_mntonname, sb->f_mntfromname,
++		    sb->f_bsize, (unsigned long long)sb->f_blocks,
++		    (unsigned long long)sb->f_bfree, (unsigned long long)sb->f_bavail,
++		    (unsigned long long)vfs_flags(mp));
++	} else {
++		printf("MIRO-VOL[%u] type=? mnt=? (no vfsstatfs)\n", *seen);
++	}
++	++*seen;
++	return VFS_RETURNED;
++}
++
++static void
++miro_mount_report(const char *why)
++{
++	unsigned seen = 0;
++	printf("MIRO-MNT %s: owner-data stage=%d status=%d ro=%d seed_bytes=%llu base=0x%llx dev=%s "
++	    "ram_bytes=%llu persist state=%u pages=%llu first_lba=%llu errors=%llu\n",
++	    why, native_owner_data_stage, native_owner_data_status, native_owner_data_readonly,
++	    (unsigned long long)native_owner_data_seed_size,
++	    (unsigned long long)native_owner_data_seed_base, native_owner_data_device_path,
++	    (unsigned long long)native_ram_block_bytes,
++	    native_data_persist_state,
++	    (unsigned long long)native_data_persist_pages,
++	    (unsigned long long)native_data_persist_first_lba,
++	    (unsigned long long)native_data_persist_errors);
++	vfs_iterate(0, miro_mount_report_cb, &seen);
++	printf("MIRO-MNT: %u volumes\n", seen);
++}
++#else
++static void
++miro_mount_report(const char *why)
++{
++	printf("MIRO-MNT %s: owner-data mount is not built in\n", why);
++}
++#endif
++
+ int
+ exit1(proc_t p, int rv, int *retval)
+ {
+@@ -1695,6 +1767,110 @@
+ 
+ static TUNABLE(bool, panic_on_crash_disabled, "panic_on_crash_disabled", false);
+ 
++/*
++ * miro bring-up (l15): leave the death reason on the medium.
++ *
++ * With panic_on_crash_disabled=1 nothing panics but initproc, so a process
++ * that dies early only prints "Too many corpses being created" and its reason
++ * is lost. native_ufs_panic_write() writes a MIROPNC1 record into the board's
++ * unencrypted `oops` partition, which fastboot can fetch back without root.
++ *
++ * Only the processes whose death means the boot failed are recorded, and only
++ * the first few of each: a SpringBoard loop restarts hundreds of times and the
++ * record is eight blocks.
++ */
++extern int native_ufs_panic_write(const char *text, unsigned long length) __attribute__((weak_import));
++
++static void
++miro_record_crash(proc_t p, int rv, const char *prefix)
++{
++	if (!&native_ufs_panic_write || !p) {
++		return;
++	}
++	/* Any process that dies from a signal is recorded, capped per name so a
++	 * restart loop cannot fill the eight-block record with one process. The
++	 * boot-critical names always get in; everything else needs a signal. */
++	static struct { char name[24]; int count; } seen[16];
++	static unsigned seen_count;
++	const bool critical = (p == initproc ||
++	    strncmp(p->p_comm, "SpringBoard", sizeof(p->p_comm)) == 0 ||
++	    strncmp(p->p_comm, "watchdogd", sizeof(p->p_comm)) == 0);
++	if (!critical && !WIFSIGNALED(rv)) {
++		return;
++	}
++	{
++		unsigned slot = seen_count;
++		for (unsigned i = 0; i < seen_count; i++) {
++			if (strncmp(seen[i].name, p->p_comm, sizeof(seen[i].name)) == 0) {
++				slot = i;
++				break;
++			}
++		}
++		if (slot == seen_count) {
++			if (seen_count >= sizeof(seen) / sizeof(seen[0])) {
++				return;
++			}
++			strlcpy(seen[slot].name, p->p_comm, sizeof(seen[slot].name));
++			seen[slot].count = 0;
++			seen_count++;
++		}
++		if (++seen[slot].count > (critical ? 4 : 2)) {
++			return;
++		}
++	}
++	char text[1024];
++	int at = 0;
++#define MIRO_APPEND(...) \
++	do { \
++		if (at < (int)sizeof(text) - 1) { \
++			int n = snprintf(text + at, sizeof(text) - at, __VA_ARGS__); \
++			if (n > 0) { at += n; } \
++		} \
++	} while (0)
++	MIRO_APPEND("miro crash: %s pid %d\n", p->p_comm, proc_getpid(p));
++	MIRO_APPEND("wait_status 0x%x: %s signal %d exit %d\n", rv,
++	    WIFSIGNALED(rv) ? "signalled" : (WIFEXITED(rv) ? "exited" : "other"),
++	    WIFSIGNALED(rv) ? WTERMSIG(rv) : -1,
++	    WIFEXITED(rv) ? WEXITSTATUS(rv) : -1);
++	if (p->p_exit_reason != OS_REASON_NULL) {
++		MIRO_APPEND("reason namespace %u code 0x%llx flags 0x%llx\n",
++		    p->p_exit_reason->osr_namespace,
++		    (unsigned long long)p->p_exit_reason->osr_code,
++		    (unsigned long long)p->p_exit_reason->osr_flags);
++	} else {
++		MIRO_APPEND("reason: none\n");
++	}
++	MIRO_APPEND("csflags 0x%x killed %d\n", proc_getcsflags(p),
++	    (proc_getcsflags(p) & CS_KILLED) ? 1 : 0);
++	/* miro l18: the register state at the trap and a short backtrace.
++	 * BootFaultProbe keeps it for a breakpoint/abort; a plain kill() has no
++	 * hardware exception and the probe falls back to the current user regs. */
++	if (WIFSIGNALED(rv)) {
++		extern void boot_progress_exit_fault(int, unsigned, char *, unsigned long);
++		char fault[400];
++		fault[0] = 0;
++		boot_progress_exit_fault(proc_getpid(p), (unsigned)WTERMSIG(rv),
++		    fault, sizeof(fault));
++		if (fault[0]) {
++			MIRO_APPEND("fault: %s\n", fault);
++		}
++	}
++	MIRO_APPEND("owner-data stage %d status %d ro %d seed %llu\n",
++	    native_owner_data_stage, native_owner_data_status, native_owner_data_readonly,
++	    (unsigned long long)native_owner_data_seed_size);
++	MIRO_APPEND("persist state %u pages %llu first_lba %llu errors %llu\n",
++	    native_data_persist_state,
++	    (unsigned long long)native_data_persist_pages,
++	    (unsigned long long)native_data_persist_first_lba,
++	    (unsigned long long)native_data_persist_errors);
++	if (prefix) {
++		MIRO_APPEND("prefix: %s\n", prefix);
++	}
++#undef MIRO_APPEND
++	native_ufs_panic_write(text, (unsigned long)at);
++}
++
++
+ static bool
+ proc_should_trigger_panic(proc_t p, int rv)
+ {
+@@ -1705,6 +1881,9 @@
+ 
+ 	if (panic_on_crash_disabled) {
+ 		printf("panic-on-crash disabled via boot-arg\n");
++		/* miro l15: the boot will not panic here, so save why the process
++		 * died before this branch throws the reason away. */
++		miro_record_crash(p, rv, NULL);
+ 		return false;
+ 	}
+ 
+@@ -1817,9 +1996,27 @@
+ #endif /* (DEVELOPMENT || DEBUG) && CONFIG_COREDUMP */
+ }
+ 
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++extern volatile int native_owner_cache_stage;
++extern volatile int native_owner_cache_status;
++extern char native_owner_cache_device_path[64];
++extern volatile int native_owner_cache_path_mask;
++extern char native_owner_cache_root_names[96];
++extern volatile uint32_t native_owner_cache_file_mask;
++extern char native_owner_cache_root_raw[49];
++extern char native_owner_cache_lib_names[64];
++extern char native_owner_cache_dyld_names[96];
++extern char native_owner_cache_names_src[16];
++#endif
++
+ static void
+ proc_handle_critical_exit(proc_t p, int rv)
+ {
++	/* miro l15: keep the reason for the processes that decide the boot. */
++	if (p == initproc || strncmp(p->p_comm, "SpringBoard", sizeof(p->p_comm)) == 0 ||
++	    strncmp(p->p_comm, "watchdogd", sizeof(p->p_comm)) == 0) {
++		miro_record_crash(p, rv, NULL);
++	}
+ 	if (!proc_should_trigger_panic(p, rv)) {
+ 		// No panic, bail out
+ 		return;
+@@ -1849,7 +2046,7 @@
+ #if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
+ 	char prefix_str_buf[1024];
+ #else
+-	char prefix_str_buf[128];
++	char prefix_str_buf[384];
+ #endif
+ 
+ 	if (p == initproc) {
+@@ -1860,12 +2057,29 @@
+ 		} else {
+ 			prefix_str = "initproc failed to start";
+ 		}
++#if defined(XNU_OWNER_CACHE_MOUNT) && XNU_OWNER_CACHE_MOUNT
++		snprintf(prefix_str_buf, sizeof(prefix_str_buf), "%s [cache %d/%d %s p%x f%x %s]",
++		    prefix_str, native_owner_cache_stage, native_owner_cache_status,
++		    native_owner_cache_device_path, native_owner_cache_path_mask,
++		    native_owner_cache_file_mask, native_owner_cache_root_names);
++		prefix_str = prefix_str_buf;
++#endif
+ 	} else {
+ 		/* For processes that aren't launchd, just use the process name and pid */
+ 		snprintf(prefix_str_buf, sizeof(prefix_str_buf), "%s[%d] exited", p->p_name, proc_getpid(p));
+ 		boot_progress_critical_exit(proc_getpid(p), prefix_str_buf, sizeof(prefix_str_buf));
+ 		prefix_str = prefix_str_buf;
+ 	}
++	/* miro l12: the first dead boot-critical process, once only. */
++	{
++		static int miro_mount_reported;
++		if (!miro_mount_reported &&
++		    (p == initproc || strncmp(p->p_name, "SpringBoard", sizeof(p->p_name)) == 0 ||
++		    strncmp(p->p_name, "watchdogd", sizeof(p->p_name)) == 0)) {
++			miro_mount_reported = 1;
++			miro_mount_report(p->p_name);
++		}
++	}
+ 
+ 	proc_crash_coredump(p);
+ 

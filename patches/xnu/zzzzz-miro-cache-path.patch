@@ -1,0 +1,19 @@
+--- a/bsd/vm/vm_unix.c
++++ b/bsd/vm/vm_unix.c
+@@ -422,6 +422,7 @@
+ 	"/System/Library/Caches/com.apple.dyld/",
+ 	"/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
+ 	"/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
++	"/private/preboot/System/Library/Caches/com.apple.dyld",
+ 	NULL
+ };
+ 
+@@ -2520,7 +2521,7 @@
+ 
+ 		bool in_trust_cache = false;
+ 		TrustCacheQueryToken_t qt;
+-		if (query_trust_cache(kTCQueryTypeAll, cdhash, &qt) == KERN_SUCCESS) {
++		if (amfi != NULL && query_trust_cache(kTCQueryTypeAll, cdhash, &qt) == KERN_SUCCESS) {
+ 			TCType_t tc_type = kTCTypeInvalid;
+ 			TCReturn_t tc_ret = amfi->TrustCache.queryGetTCType(&qt, &tc_type);
+ 			in_trust_cache = (tc_ret.error == kTCReturnSuccess &&

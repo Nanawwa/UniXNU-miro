@@ -1,0 +1,7 @@
+# Board patch series. Ordered by the unixnu driver; each layer (arch, SoC,
+# OS profile, device) contributes its own series file. These four are the
+# board's own additions and sort last by name.
+zzzz-miro-amfi-bringup-guards.patch
+zzzzz-miro-cache-path.patch
+zzzzzz-miro-owner-cache-bringup.patch
+zzzzzzz-miro-ufs-log.patch

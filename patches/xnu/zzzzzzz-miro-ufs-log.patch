@@ -1,0 +1,216 @@
+--- a/osfmk/kern/printf.c
++++ b/osfmk/kern/printf.c
+@@ -862,12 +862,194 @@
+ #endif
+ }
+ 
++#define MIRO_LOG_BYTES (256 * 1024)
++extern void console_write(char *str, int size);
++/* miro l17: the previous boot's crash record, kept for reprinting.
++ * state: 0 not read, 1 ok, 2 crc bad, 3 none, 4 unavailable. */
++char miro_prev_text[7 * 1024];
++/* miro l25: the condensed digest, kept so the tick can reprint it the same
++ * way the crash record is reprinted. */
++char miro_digest_text[8 * 1024];
++volatile unsigned miro_digest_len;
++volatile int miro_digest_ready;
++/* l31: up to four digest lines, already cut to fit one framebuffer row. */
++char miro_digest_rows[4][112];
++volatile int miro_digest_row_count;
++volatile unsigned miro_prev_len;
++volatile int miro_prev_state;
++char miro_log_ring[MIRO_LOG_BYTES];
++volatile size_t miro_log_len;
++volatile int miro_log_enabled;
++volatile int miro_log_open_status;
++volatile uint64_t miro_log_first_lba;
++volatile long long miro_log_value;
++
++extern int native_ufs_log_write(uint64_t rel, uint32_t blocks, const void *src);
++extern int native_ufs_log_sync(void);
++
++void
++miro_log_flush(const char *reason)
++{
++	if (!miro_log_enabled) {
++		return;
++	}
++	static uint8_t header[4096];
++	static const char magic[8] = { 'D', 'A', 'D', 'A', 'L', 'O', 'G', '1' };
++	size_t len = miro_log_len;
++	if (len > MIRO_LOG_BYTES) {
++		len = MIRO_LOG_BYTES;
++	}
++	__builtin_memset(header, 0, sizeof(header));
++	__builtin_memcpy(header, magic, sizeof(magic));
++	__builtin_memcpy(header + 8, &len, sizeof(len));
++	int status = miro_log_open_status;
++	__builtin_memcpy(header + 24, &status, sizeof(status));
++	uint64_t first = miro_log_first_lba;
++	__builtin_memcpy(header + 32, &first, sizeof(first));
++	long long value = miro_log_value;
++	__builtin_memcpy(header + 40, &value, sizeof(value));
++	if (reason) {
++		size_t n = 0;
++		while (n < 128 && reason[n]) {
++			header[64 + n] = (uint8_t)reason[n];
++			n++;
++		}
++	}
++	uint32_t blocks = (uint32_t)((len + 4095) / 4096);
++	if (!native_ufs_log_write(0, 1, header)) {
++		return;
++	}
++	static uint8_t tail[4096];
++	for (uint32_t i = 0; i < blocks; i++) {
++		uint32_t offset = i * 4096;
++		uint32_t remaining = (uint32_t)len - offset;
++		if (remaining >= 4096) {
++			if (!native_ufs_log_write(1 + i, 1, miro_log_ring + offset)) {
++				return;
++			}
++		} else {
++			__builtin_memset(tail, 0, sizeof(tail));
++			__builtin_memcpy(tail, miro_log_ring + offset, remaining);
++			if (!native_ufs_log_write(1 + i, 1, tail)) {
++				return;
++			}
++		}
++	}
++	native_ufs_log_sync();
++}
++
+ void
+ cons_putc_locked(char c)
+ {
+ 	console_write_char(c);
+ }
+ 
++/*
++ * miro bring-up (l12): take the console text from console_write(), not from
++ * cons_putc_locked(). Ordinary printf is buffered per line and reaches the
++ * console through console_write(); cons_putc_locked()'s only caller is the
++ * kernel debugger, so a ring appended there never sees a kernel message.
++ */
++void
++miro_log_append(const char *str, int size)
++{
++	if (!miro_log_enabled || !str || size <= 0) {
++		return;
++	}
++	for (int i = 0; i < size; i++) {
++		size_t at = miro_log_len;
++		if (at >= MIRO_LOG_BYTES) {
++			break;
++		}
++		miro_log_ring[at] = str[i];
++		miro_log_len = at + 1;
++	}
++}
++
++/*
++ * Write the ring out on a timer. A failing boot does not have to panic
++ * (panic_on_crash_disabled=1): it restarts processes forever, so nothing else
++ * would ever call miro_log_flush().
++ *
++ * The guard matters: native_ufs_log_write() can print, and printing reaches
++ * console_write() again. Without it a refused write would recurse.
++ */
++void
++miro_log_tick(void)
++{
++	static uint64_t last;
++	static int inside;
++	uint64_t now;
++	__asm__ volatile("mrs %0, cntpct_el0" : "=r"(now));
++	if (!last) {
++		last = now;
++		return;
++	}
++	/* 2 s at 19.2 MHz; only the order of magnitude matters. */
++	if (now - last < 38400000ULL || inside) {
++		return;
++	}
++	last = now;
++	inside = 1;
++	miro_log_flush("tick");
++	{
++		/* miro l23: the same text also goes to the oops partition, which is
++		 * unencrypted and readable without root or a photograph. */
++		extern int native_ufs_oops_log_write(uint32_t, const char *, uint32_t)
++		    __attribute__((weak_import));
++		if (&native_ufs_oops_log_write) {
++			static uint32_t sequence;
++			int wrote = native_ufs_oops_log_write(++sequence, miro_log_ring,
++			    (uint32_t)miro_log_len);
++			/* l30: say whether the ring actually took the text. */
++			if (sequence <= 3 || (sequence % 15) == 0) {
++				printf("MIRO-RING seq=%u bytes=%u ok=%d\n",
++				    sequence, (unsigned)miro_log_len, wrote);
++			}
++		}
++		/* l30: timed return to the bootloader. */
++		{
++			extern int native_ufs_autoreset_poll(void) __attribute__((weak_import));
++			if (&native_ufs_autoreset_poll) {
++				native_ufs_autoreset_poll();
++			}
++		}
++	}
++	/* miro l17: put the previous crash record back on the console, so a
++	 * crash loop that keeps scrolling cannot hide it. Every 15th tick (about
++	 * once per 30 s) it is reprinted for the whole life of the boot: a loop
++	 * that runs for hours would scroll away any smaller number of copies. */
++	{
++		static unsigned ticks;
++		if (++ticks % 15 == 0) {
++			char head[96];
++			int n;
++			if (miro_prev_len) {
++				n = snprintf(head, sizeof(head),
++				    "MIRO-PREV crc=%s bytes=%u\n",
++				    (miro_prev_state == 1) ? "ok" :
++				    (miro_prev_state == 2) ? "bad" : "?", miro_prev_len);
++			} else {
++				n = snprintf(head, sizeof(head),
++				    "MIRO-PREV state=%d (no record)\n", miro_prev_state);
++			}
++			if (n > 0) {
++				console_write(head, n);
++			}
++			if (miro_prev_len) {
++				console_write(miro_prev_text, (int)miro_prev_len);
++				console_write("\n", 1);
++			}
++			/* miro l25: the same treatment for the digest. */
++			if (miro_digest_ready && miro_digest_len) {
++				console_write("MIRO-DIGEST\n", 13);
++				console_write(miro_digest_text, (int)miro_digest_len);
++			}
++		}
++	}
++	inside = 0;
++}
++
+ __printflike(1, 0)
+ static int
+ vprintf_internal(const char *fmt, va_list ap_in, void *caller)
+--- a/pexpert/arm/hwtrace/hwtrace.c
++++ b/pexpert/arm/hwtrace/hwtrace.c
+@@ -493,12 +493,15 @@
+ {
+ }
+ 
++extern void miro_log_flush(const char *reason);
++
+ void
+-PE_panic_hook(const char *str __unused)
++PE_panic_hook(const char *str)
+ {
+ 	if (PE_arm_debug_panic_hook != NULL) {
+ 		PE_arm_debug_panic_hook(str);
+ 	}
++	miro_log_flush(str ? str : "panic");
+ }
+ 
+ /*

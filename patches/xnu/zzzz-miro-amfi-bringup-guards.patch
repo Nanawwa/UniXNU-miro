@@ -1,0 +1,124 @@
+--- a/bsd/kern/bsd_init.c
++++ b/bsd/kern/bsd_init.c
+@@ -1096,6 +1096,16 @@
+ 				native_owner_root_checkpoint(autherr, owner, device);
+ 			}
+ #endif
++#if !defined(XNU_OWNER_ROOT_AUDIT) || !XNU_OWNER_ROOT_AUDIT
++			/*
++			 * miro: this port carries no owner-signature gate. The SHNGROOT
++			 * manifest is verified when the root image is built, so when the
++			 * owner-root audit is not part of the kernel there is no owner
++			 * signal to accept and a failing Apple rootauth ioctl must not
++			 * stop the boot.
++			 */
++			owner_authorized = 1;
++#endif
+ 			if (autherr && !owner_authorized) {
+ 				panic("rootvp not authenticated after mounting");
+ 			}
+--- a/iokit/bsddev/IOKitBSDInit.cpp
++++ b/iokit/bsddev/IOKitBSDInit.cpp
+@@ -1573,6 +1573,12 @@
+ 	if (task == kernel_task || entitlement == NULL || value == NULL) {
+ 		return false;
+ 	}
++	/*
++	 * AMFI is not prelinked on this port; see IOTaskHasEntitlement.
++	 */
++	if (amfi == NULL) {
++		return false;
++	}
+ 	proc_t proc = (proc_t)get_bsdtask_info(task);
+ 
+ 	kern_return_t ret = amfi->OSEntitlements.queryEntitlementStringWithProc(
+@@ -1604,6 +1610,14 @@
+ 	if (task == kernel_task || entitlement == NULL) {
+ 		return false;
+ 	}
++	/*
++	 * AMFI is not prelinked on this port, so there is no entitlements bridge to
++	 * query. Treat every task as unentitled instead of dereferencing a NULL
++	 * interface (data abort at amfi + 0x1b0).
++	 */
++	if (amfi == NULL) {
++		return false;
++	}
+ 	proc_t proc = (proc_t)get_bsdtask_info(task);
+ 
+ 	kern_return_t ret = amfi->OSEntitlements.queryEntitlementBooleanWithProc(
+@@ -1637,6 +1651,12 @@
+ 	if (task == kernel_task || entitlement == NULL) {
+ 		return NULL;
+ 	}
++	/*
++	 * AMFI is not prelinked on this port; see IOTaskHasEntitlement.
++	 */
++	if (amfi == NULL) {
++		return NULL;
++	}
+ 	proc_t proc = (proc_t)get_bsdtask_info(task);
+ 
+ 	kern_return_t ret = amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc(
+--- a/iokit/Kernel/IOUserClient.cpp
++++ b/iokit/Kernel/IOUserClient.cpp
+@@ -1555,6 +1555,13 @@
+ 	if (task == kernel_task || entitlement == NULL) {
+ 		return NULL;
+ 	}
++	/*
++	 * AMFI is not prelinked on this port, so there is no entitlements bridge;
++	 * report no entitlement instead of dereferencing the NULL interface.
++	 */
++	if (amfi == NULL) {
++		return NULL;
++	}
+ 	proc_t proc = (proc_t)get_bsdtask_info(task);
+ 
+ 	kern_return_t ret = amfi->OSEntitlements.copyEntitlementAsOSObjectWithProc(
+--- a/bsd/kern/kern_cs.c
++++ b/bsd/kern/kern_cs.c
+@@ -510,7 +510,7 @@
+ 		csblob->csb_flags = updated_flags;
+ 	}
+ 
+-	if (csblob->csb_entitlements != NULL) {
++	if (csblob->csb_entitlements != NULL && amfi != NULL) {
+ 		amfi->OSEntitlements_invalidate(csblob->csb_entitlements);
+ 	}
+ 
+@@ -737,7 +737,11 @@
+ 		return NULL;
+ 	}
+ 	if (!amfi) {
+-		panic("CoreEntitlements: missing AMFI bridge\n");
++		/*
++		 * AMFI is not prelinked on this port; there is no entitlements bridge to
++		 * return a dictionary from.
++		 */
++		return NULL;
+ 	}
+ 	return amfi->OSEntitlements_asdict(csblob->csb_entitlements);
+ }
+--- a/bsd/kern/kern_proc.c
++++ b/bsd/kern/kern_proc.c
+@@ -3373,7 +3373,7 @@
+ 			goto out;
+ 		}
+ 		CS_GenericBlob* xmlblob = NULL;
+-		if (amfi->OSEntitlements_get_xml(osent, &xmlblob)) {
++		if (amfi != NULL && amfi->OSEntitlements_get_xml(osent, &xmlblob)) {
+ 			start = (void*)xmlblob;
+ 			length = (size_t)ntohl(xmlblob->length);
+ 		} else {
+--- a/bsd/kern/ubc_subr.c
++++ b/bsd/kern/ubc_subr.c
+@@ -3940,7 +3940,7 @@
+ 		blob->csb_native4k_hashes_size = 0;
+ 		blob->csb_native4k_hash_count = 0;
+ 	}
+-	if (blob->csb_entitlements != NULL) {
++	if (blob->csb_entitlements != NULL && amfi != NULL) {
+ 		amfi->OSEntitlements_invalidate(blob->csb_entitlements);
+ 		osobject_release(blob->csb_entitlements);
+ 		blob->csb_entitlements = NULL;
