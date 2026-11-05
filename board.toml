@@ -202,6 +202,9 @@ kernel_args = [
   # l30: return to the bootloader 150 s after launchd starts, so a test run
   # needs no power-button hold. The log tick flushes before the reset.
   "miro-autoreset=150",
+  # l34: dyld knows why it does not map the cache; ask it. The prints land in the
+  # console ring the reader pulls. Remove once the shared cache maps.
+  "miro-dyld-verbose=1",
 ]
 
 [payload.adt]
