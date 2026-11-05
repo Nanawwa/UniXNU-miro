@@ -1,0 +1,121 @@
+name: Data seed (macOS)
+
+# The Data volume XNU mounts at /private/var is an APFS container. No Linux tool
+# can create one, so the seed is built on a macOS runner and downloaded as an
+# artifact. Upstream does the same for every board (see nx769j in the UniXNU
+# device records); scripts/make-data-seed.py is the upstream generator.
+
+on:
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: UniXNU ref providing make-data-seed.py
+        required: true
+        default: main
+      grow_gib:
+        description: Grow the APFS container to this many GiB
+        required: true
+        default: "8"
+      skip_setup:
+        description: Mark Setup as done inside the seed
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  seed:
+    runs-on: macos-26
+    timeout-minutes: 180
+    env:
+      IPSW_URL: https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw
+      OS_DMG: 044-76040-038.dmg
+      OS_DMG_SHA256: 3f99b859c9728379110b66657c7b15285bcb1925ad8b5726542e2cdcf8b1028d
+
+    steps:
+      - name: Check out UniXNU (provides make-data-seed.py and packed_ramdisk.py)
+        uses: actions/checkout@v4
+        with:
+          repository: UniXNU/UniXNU
+          ref: ${{ inputs.unixnu_ref }}
+          path: UniXNU
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Get 7z
+        run: command -v 7z || brew install p7zip
+
+      - name: Download the 21H461 restore IPSW
+        run: |
+          curl -fL --retry 3 --retry-all-errors -o "$RUNNER_TEMP/21H461.ipsw" "$IPSW_URL"
+          ls -l "$RUNNER_TEMP/21H461.ipsw"
+
+      - name: Extract the OS volume image
+        run: |
+          member=$(7z l "$RUNNER_TEMP/21H461.ipsw" | awk -v n="$OS_DMG" '$0 ~ n {print $NF}' | head -1)
+          echo "member=$member"
+          [ -n "$member" ] || { echo "no $OS_DMG inside the IPSW"; exit 1; }
+          7z x -y -o"$RUNNER_TEMP/dmg" "$RUNNER_TEMP/21H461.ipsw" "$member"
+          dmg=$(find "$RUNNER_TEMP/dmg" -name "$OS_DMG" | head -1)
+          echo "dmg=$dmg" >> "$GITHUB_ENV"
+          echo "$OS_DMG_SHA256  $dmg" | shasum -a 256 -c -
+          rm -f "$RUNNER_TEMP/21H461.ipsw"
+          df -h "$RUNNER_TEMP"
+
+      - name: Mount the OS volume read-only
+        run: |
+          hdiutil attach -readonly -nobrowse "$dmg"
+          osm=""
+          for v in /Volumes/*; do
+            if [ -f "$v/sbin/launchd" ] && [ -d "$v/private/var" ]; then osm="$v"; break; fi
+          done
+          [ -n "$osm" ] || { ls -l /Volumes; echo "no IPSW OS volume mounted"; exit 1; }
+          echo "osm=$osm" >> "$GITHUB_ENV"
+          du -sh "$osm/private/var"
+
+      - name: Build the Data seed
+        run: |
+          mkdir -p UniXNU/build out
+          python3 UniXNU/scripts/make-data-seed.py "$osm" "out/miro-data.dbr" \
+            --gib "${{ inputs.grow_gib }}" --build 21H461 ${{ inputs.skip_setup && '--skip-setup' || '' }}
+
+      - name: Report the seed
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import hashlib, importlib.util, json, uuid
+          from pathlib import Path
+          spec = importlib.util.spec_from_file_location('packed_ramdisk', 'UniXNU/drivers/DarwinBoot/Test/packed_ramdisk.py')
+          mod = importlib.util.module_from_spec(spec); spec.loader.exec_module(mod)
+          blob = Path('out/miro-data.dbr').read_bytes()
+          logical, extents = mod.regions(blob)
+          ids = set()
+          for _, data in extents:
+              for at in range(0, len(data), 4096):
+                  block = data[at:at + 4096]
+                  if block[32:36] == b'APSB':
+                      ids.add(str(uuid.UUID(bytes=bytes(block[240:256]))).upper())
+          report = dict(bytes=len(blob), logical_gib=round(logical / 1024**3, 3),
+                        sha256=hashlib.sha256(blob).hexdigest(), data_volume_uuid=sorted(ids))
+          print('```json'); print(json.dumps(report, indent=2)); print('```')
+          PY
+
+      - name: Unmount the OS volume
+        if: always()
+        run: |
+          [ -n "$osm" ] && hdiutil detach "$osm" -force || true
+          hdiutil info | grep -c /Volumes || true
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: miro-data-dbr
+          path: out/miro-data.dbr
+          if-no-files-found: error
+          retention-days: 30
