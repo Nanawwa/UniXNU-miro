@@ -1,0 +1,14 @@
+{
+  "kernel_sha256": "d47f4ac9760857ef49fa03efc47de58e157854dca23f95174d6bf56c6ecae57b",
+  "payload_kernel_sha256": "39e8fb3ceac8ef7cc15cc287d5134f075c0e57379957047be1592f3fda6157e5",
+  "adt_sha256": "165c5a17ea2c2f30f254df0d80237dab20a703e9f09121094e69e6d0ee279155",
+  "kernel_args": "-v debug=0x14e boot-progress=2 armcpu-diagnostics=1 native-ufs-root=1 native-ufs-diagnostics=1 -no_slto_panic sheng-pmgr=2 ml-timeout-lock-panic-scale=40",
+  "trust_cache_sha256": "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+  "gpu_addon_sha256": null,
+  "data_ramdisk_sha256": null,
+  "skip_setup": false,
+  "panic_screen": true,
+  "payload_sha256": "3c7b7e82ca91eac754e5ed33e3585b8cf22132821ba18d09ab7ff07edbd6dcc1",
+  "payload_bytes": 201326592,
+  "hardware_tested": false
+}

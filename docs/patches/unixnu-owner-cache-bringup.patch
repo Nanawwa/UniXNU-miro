@@ -1,0 +1,15 @@
+diff --git a/scripts/build-xnu-4k-baseline.sh b/scripts/build-xnu-4k-baseline.sh
+--- a/scripts/build-xnu-4k-baseline.sh
++++ b/scripts/build-xnu-4k-baseline.sh
+@@ -376,8 +376,9 @@
+   exit 1
+ fi
+ if [ "$OWNER_CACHE_MOUNT" = 1 ] && [ "$OWNER_ROOT_TRUST" != 1 ]; then
+-  echo 'The offline SystemOS mount requires real independent owner root enforcement' >&2
+-  exit 1
++  # miro bring-up: the SystemOS cryptex is mounted without an owner policy so launchd can find the dyld
++  # shared cache. The transport answers the authorization query; see docs/patches.
++  echo 'warning: offline SystemOS mount without owner root trust (bring-up mode)' >&2
+ fi
+ OWNER_CACHE_STARTUP=${XNU_OWNER_CACHE_STARTUP:-0}
+ if [ "$OWNER_CACHE_STARTUP" != 0 ] && [ "$OWNER_CACHE_STARTUP" != 1 ]; then

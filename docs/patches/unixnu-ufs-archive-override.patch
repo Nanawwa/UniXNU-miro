@@ -1,0 +1,13 @@
+diff --git a/scripts/build-xnu-4k-baseline.sh b/scripts/build-xnu-4k-baseline.sh
+index 7c49d9d..4e86dd4 100755
+--- a/scripts/build-xnu-4k-baseline.sh
++++ b/scripts/build-xnu-4k-baseline.sh
+@@ -612,7 +612,7 @@ if [ "${XNU_SOURCE_CORECRYPTO14:-0}" = 1 ] && [ "$BOOTSTRAP" = 0 ]; then
+     KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $ARMCPU_ARCHIVE"
+   fi
+   if [ "${XNU_NATIVE_UFS:-0}" = 1 ]; then
+-    UFS_ARCHIVE=$ROOT/build/sheng-ufs/libShengUfs.a
++    UFS_ARCHIVE=${XNU_NATIVE_UFS_ARCHIVE:-$ROOT/build/sheng-ufs/libShengUfs.a}
+     test -f "$UFS_ARCHIVE"
+     KERNEL_EXTRA_ARCHIVES="$KERNEL_EXTRA_ARCHIVES -Wl,-force_load,$UFS_ARCHIVE"
+     KERNEL_ARCHIVE_DEPENDENCIES="$KERNEL_ARCHIVE_DEPENDENCIES $UFS_ARCHIVE"

@@ -1,0 +1,54 @@
+{
+  "date": "2026-10-26T04:51:25Z",
+  "host": "Ubuntu 24.04 LTS (WSL2), x86_64, 12 parallel jobs",
+  "toolchain": "/opt/unixnu-linux (UniXNU Linux toolchain, clang 24, iOS 17 target)",
+  "kernelcache": "out/ipsw/21H461/kernelcache.decompressed (sha256 pinned by kernel.prelink)",
+  "commands": {
+    "kernel": "./unixnu build kernel -D ../UniXNU-miro",
+    "firmware": "./unixnu build firmware -D ../UniXNU-miro --uefi ../uefi-miro --edk2 ../uefi-miro/Mu_Basecore",
+    "payload": "./unixnu build payload -D ../UniXNU-miro",
+    "bootimg": "./unixnu bootimg -D ../UniXNU-miro"
+  },
+  "firmware": {
+    "path": "uefi-miro/Build/miroPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd",
+    "bytes": 3145728,
+    "sha256": "e53a559c9a9a4293a5ab72b86a4d08b3cd231e88863d5bcc198445c5a505ff28",
+    "modules": [
+      "UniXNU",
+      "UniXNUDxe",
+      "UniXNURamDiskDxe",
+      "DarwinBoot"
+    ]
+  },
+  "kernel": {
+    "path": "out/miro/ipados-17.7.11-21H461/miro/kernel/kernel.macho",
+    "bytes": 51044352,
+    "sha256": "d47f4ac9760857ef49fa03efc47de58e157854dca23f95174d6bf56c6ecae57b"
+  },
+  "payload": {
+    "path": "out/miro/ipados-17.7.11-21H461/miro/payload/payload.img",
+    "bytes": 201326592,
+    "sha256": "3c7b7e82ca91eac754e5ed33e3585b8cf22132821ba18d09ab7ff07edbd6dcc1"
+  },
+  "boot_image": {
+    "path": "out/miro/ipados-17.7.11-21H461/miro/boot/boot.img",
+    "bytes": 203558912,
+    "sha256": "a629ae1f904fe21e051ff078b073c7e18ad45198853d20baa9a592e5a0fbd744",
+    "header_version": 4
+  },
+  "prelink": {
+    "components": 27,
+    "amfi_components": [
+      "com.apple.driver.AppleMobileFileIntegrity"
+    ],
+    "pmgr_components": [
+      "com.apple.driver.ApplePMGR"
+    ],
+    "early_security_initializers": {
+      "com.apple.driver.AppleMobileFileIntegrity": 18446744005068409568
+    },
+    "slide": -16777216,
+    "runtime_qualified": false
+  },
+  "hardware_tested": false
+}
