@@ -1,0 +1,24 @@
+version = 1
+
+# Fallback configuration of the payload volume. The payload step writes its own
+# /EFI/UniXNU/unixnu.toml from board.toml [payload]; this file is what the volume holds when a hand-made
+# volume (or the firmware's removable-media scan) is used instead.
+[boot]
+timeout = 3
+default = "xnu"
+
+[kits]
+autoload = false
+
+[[entry]]
+id = "xnu"
+title = "UniXNU (miro)"
+type = "xnu"
+path = "Payloads/kernel.macho"
+args = "-v serial=3 debug=0x14e boot-progress=2"
+
+[[entry]]
+id = "exit"
+title = "Return to firmware"
+type = "action"
+action = "exit"
