@@ -1,0 +1,13 @@
+# Sources of this board repository. UniXNU's own feeds.toml supplies xnu,
+# libplatform, libdispatch, AvailabilityVersions, edk2, libpthread and
+# corecrypto; the board pins the shared SoC source here.
+#
+# Common SM8750 resources and platform operations live in
+# UniXNU-sm8750-common. The URL is the maintainer's repository; until it is
+# pushed there, point this source at the local checkout with local.toml
+# (ignored). local.toml.example documents the override.
+[[source]]
+name = "sm8750"
+kind = "soc"
+git = "https://github.com/7Night-kqx/UniXNU-sm8750-common.git"
+commit = "afeeb96906b80cf616cc5e51314f93860f431fbc"

@@ -1,0 +1,29 @@
+{
+  "source": "https://updates.cdn-apple.com/2025SpringFCS/fullrestores/122-77166/DCA6CFE8-90E9-4B92-880D-3DE171798E40/iPad_Pro_HFR_17.7.11_21H461_Restore.ipsw",
+  "ipsw_bytes": 6835124840,
+  "method": "DNS for updates.cdn-apple.com is hijacked to 198.18.0.136; resolved the Apple CNAME via DoH and fetched ZIP entries with curl --resolve updates.cdn-apple.com:443:200.25.91.48 and HTTP range requests",
+  "entries": {
+    "044-76040-038.dmg.trustcache": {
+      "zip_offset": 6773229231,
+      "zlib_size": 54001,
+      "size": 59519,
+      "module_sha256": "da88460e6e513438d5307e5c526f76497a74754476a24da29f239f0c90120fc2",
+      "entries": 2478
+    },
+    "044-76034-038.dmg.trustcache": {
+      "zip_offset": 6749450471,
+      "zlib_size": 1748,
+      "size": 1871,
+      "module_sha256": "d121ba89167e03aafd00fa687c30cd8ebc4ccafd10c1408adb2ba3de12403651",
+      "entries": 76
+    }
+  },
+  "bundle": {
+    "path": "inputs/trustcache/original-static-system.bundle",
+    "bytes": 61356,
+    "sha256": "7416ca4f8377146626bb284e2133c76bee6cb4e3ee0af5d648b186235a7323a7",
+    "matches_profile_trust_cache_sha256": true,
+    "layout": "u32 count=2, offsets[12, 12+59496], OS module then SystemOS module (version 2, 24-byte entries)"
+  },
+  "notes": "The IPSW has no StaticTrustCache.img4; the per-dmg Firmware/*.dmg.trustcache entries contain the same two version-2 modules that scripts/build-original-system-trust.py bundles."
+}

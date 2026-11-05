@@ -1,0 +1,244 @@
+# Board description of the Redmi K80 Pro (miro, Qualcomm SM8750).
+#
+# Format 2: shared SM8750 resources come from UniXNU-sm8750-common, the target
+# OS identity from the selected OS profile, and this file keeps the board's own
+# wiring, firmware selection, partition geometry and payload policy.
+# docs/known-values.md records every pinned address and its source.
+schema_version = 2
+
+[board]
+name = "miro"
+soc = "SM8750"
+soc_source = "sm8750"
+os_profile = "ipados-17.7.11-21H461"
+description = "Redmi K80 Pro"
+kit = "miro"
+example = false
+
+[components]
+# The components this board's kernel builds today. VirtioMmioBlock arrives as
+# MiroUfs's dependency. Further checkouts under drivers/ and kits/
+# (GopFramebuffer, AppleKeyStoreState, QcomGeniSpi, RamBlock,
+# VirtioMmioConsole) are generic components kept for later subsystems; the
+# sheng-only GPU and touch checkouts were removed with the board fork.
+# porting.toml records each area.
+include = ["ArmDTPlatform", "ArmCpu", "SoftwareAES", "MiroUfs", "RamBlock", "XnuPrelink", "DarwinBoot"]
+
+[userdata]
+# GPT entry "linux" on LUN 0 (sda35 after the table is rewritten). The
+# partition is 10 GiB: 2 621 440 4096-byte LBAs, first 125997824, last
+# 128619263. It carries the SHNGROOT manifest and the OS/SystemOS windows;
+# everything past the image, up to the last LBA, holds the diagnostic log.
+first_lba = 125997824
+last_lba = 128619263
+lba_bytes = 4096
+windows = [
+  { name = "OS", component = "OS" },
+  { name = "SystemOS", component = "Cryptex1,SystemOS" },
+]
+
+[kernel]
+defconfig = "miro_defconfig"
+config_fragments = ["arch:configs/common.config", "soc:configs/sm8750.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "soc:patches/xnu/series", "os:patches/xnu/series", "device:patches/xnu/series"]
+# Ordered archive plan. The storage transport needs the pinned
+# IOBlockStorageDevice reference object (build-storage-classes.py) and then the
+# kext-binding pass (build-storage-kext-bindings.py) that rebinds its base-class
+# imports to the prelinked com.apple.iokit.IOStorageFamily addresses. Compiling
+# that base class into the kernel instead registers a duplicate OSMetaClass.
+archives = [
+  "build-corecrypto-14.py",
+  "build-corecrypto-14.py --namespace",
+  "component:ArmDTPlatform",
+  "component:ArmCpu",
+  "component:SoftwareAES",
+  "build-software-aes-bindings.py",
+  "build-libpthread-kernel.py",
+  "build-storage-classes.py",
+  "component:MiroUfs",
+  "component:RamBlock",
+"build-miro-platform-power.py",
+  "build-storage-kext-bindings.py --component MiroUfs",
+  "build-miro-ram-block.py",
+  "build-miro-boot-log.py",
+]
+
+[kernel.prelink]
+# tool, kernel, kernelcache_sha256 and slide come from the OS profile. This
+# board prelinks no AMFI (and nothing that depends on it), so it also clears the
+# inherited early security initializer: see docs/known-values.md, "Why AMFI is
+# not prelinked".
+early_security_init = "com.apple.driver.AppleMobileFileIntegrity=0xfffffff005ab4ae0"
+roots = [
+  "com.apple.AppleFSCompression.AppleFSCompressionTypeZlib",
+  "com.apple.driver.AppleARMPlatform",
+  "com.apple.driver.AppleARMWatchdogTimer",
+  "com.apple.driver.AppleAudioClockLibs",
+  "com.apple.driver.AppleEffaceableStorage",
+  "com.apple.driver.AppleIISController",
+  "com.apple.driver.AppleM2ScalerCSCDriver",
+  "com.apple.driver.AppleMobileFileIntegrity",
+  "com.apple.driver.ApplePMGR",
+  "com.apple.driver.IODARTFamily",
+  "com.apple.filesystems.apfs",
+  "com.apple.iokit.CoreAnalyticsFamily",
+  "com.apple.iokit.IOAVFamily",
+  "com.apple.iokit.IOAudio2Family",
+  "com.apple.iokit.IOCECFamily",
+  "com.apple.iokit.IOCryptoAcceleratorFamily",
+  "com.apple.iokit.IOHDCPFamily",
+  "com.apple.iokit.IOReportFamily",
+  "com.apple.iokit.IOSlowAdaptiveClockingFamily",
+  "com.apple.iokit.IOStorageFamily",
+  "com.apple.iokit.IOSurface",
+  "com.apple.kec.Libm",
+  "com.apple.kec.corecrypto",
+  "com.apple.kext.AppleMatch",
+  "com.apple.kext.CoreTrust",
+  "com.apple.security.AppleImage4",
+  "com.apple.security.sandbox",
+]
+
+[device_tree]
+source = "device:dts/miro.dts"
+include_dirs = ["soc:dts"]
+
+[firmware]
+config = "miro"
+dsc = "Platforms/Xiaomi/miroPkg/miro.dsc"
+fd = "Build/miroPkg/{target}_CLANGPDB/FV/SILICIUM_UEFI.fd"
+preflight = ["scripts/check-miro.py"]
+# The vendor binaries (Binaries/Device-Binaries, branch miro) and the trees the
+# DSC needs.
+submodules = [
+  "Binaries",
+  "Common/Mu",
+  "Common/Mu_OEM_Sample",
+  "Silicon/Silicium/OpensslPkg/Library/OpensslLib/openssl",
+]
+# The Mu_Basecore patch series that Mu-Silicium's build_uefi.py applies to every
+# platform. UniXNU applies and reverts them around the EDK II build.
+patches = [
+  "Resources/MuPatches/AsmMacroLib.patch",
+  "Resources/MuPatches/Auth-Service.patch",
+  "Resources/MuPatches/Boot-Manager.patch",
+  "Resources/MuPatches/Timer.patch",
+  "Resources/MuPatches/Usb-Bus.patch",
+]
+packages = [
+  "{uefi}",
+  "{uefi}/Platforms/Xiaomi",
+  "{tree}/package",
+  "{tree}/drivers/DarwinBoot",
+  "{edk2}",
+  "{uefi}/Common/Mu",
+  "{uefi}/Common/Mu_OEM_Sample",
+  "{uefi}/Silicon/Qualcomm",
+  "{uefi}/Silicon/Silicium",
+]
+
+[firmware.defines]
+ENABLE_SECUREBOOT = "0"
+DEVICE_MODEL = "0"
+MEMORY_PROTECTION = "TRUE"
+SHIP_MODE = "FALSE"
+BUILDID_STRING = "miro-research"
+
+[payload]
+volume = "MIROESP"
+# 64 MiB: 51.2 MiB is in use. The volume travels inside the kernel blob now,
+# so it also has to fit the Kernel window the shim copies it into.
+size_mib = 64
+loader = "firmware"
+title = "miro first boot: source 4K XNU to console"
+# Give the screen log time to be read before the default entry boots.
+timeout = 30
+# No entry probe: the kernel runs free to the console and past it.
+# One contiguous dram-base/dram-size pair: the stock tree reports 15.12 GiB in
+# 16 regions, which the ADT cannot express, so 2 GiB from 0x80000000 stays the
+# conservative first-boot value.
+dram_size = "0x80000000"
+panic_screen = true
+# The Android kernel's ramoops console zone (DTB reserved-memory/ramoops-region): the panic handler writes the
+# text there and resets through PSCI, so a rooted Android boot reads it from /sys/fs/pstore/dmesg-ramoops-0.
+panic_ramoops = "0xa3500000"
+panic_ramoops_size = "0x200000"
+panic_ramoops_delay = 5
+kernel_args = [
+  "-v",
+  "debug=0x14e",
+  "boot-progress=2",
+  "armcpu-diagnostics=1",
+  "native-ufs-root=1",
+  "native-ufs-diagnostics=1",
+  "-no_slto_panic",
+  "sheng-pmgr=2",
+  # l12: the diagnostic log window only (miro-log=1). It is the last 32 MiB of the root partition, with a 256 MiB export
+  # region below it and a 1 GiB reserve above the store, so it never overlaps the 9.38 GiB root image (guarded by
+  # imageBlocks + 1024 blocks in native_ufs_log_open). The Data store window (miro-data-persist) stays OFF: it is the
+  # argument that owns hostStoreOpen, and the store is only useful once the Data container is bigger than its 32 MiB seed.
+  # On 2026-10-29 a window aimed at the tail of userdata destroyed live filesystem data; the log window is the narrower,
+  # reversible half, and the user approved writing the partition for it on 2026-11-03.
+  "miro-log=1",
+  # l13: the 8 GiB Data seed has no volatile mode, so the store window must be open
+  # before the kernel mounts it. See native_ufs_store_open for the geometry check.
+  "miro-data-persist=2",
+  "-apfs_shared_datavolume",
+  "panic_on_crash_disabled=1",
+  "ml-timeout-lock-panic-scale=40",
+  # Bring-up only: clears ip_mac_return and ip_cs_error at the exec gate
+  # (patches/xnu/zzzzzzzzzzzzzzz-miro-no-cs-bringup.patch). A real StaticTrustCache is the faithful fix.
+  "miro-no-cs=1",
+  # l20/l21: the sibling K60 port traced a daemon death storm to the sandbox
+  # policy answering ENOPOLICY(159) for every __mac_syscall. It uses
+  # amfi_get_out_of_my_way together with cs_enforcement_disable, but the latter
+  # panics here: the prelinked Apple AMFI asserts with
+  #   "can't has cs_enforcement_disable" @MobileFileIntegrity
+  # (K60 gets away with it because their port registers its own permissive AMFI
+  # stand-in on a kernel where the real AMFI is not prelinked). Only the
+  # argument that sets CS_CONFIG_GET_OUT_OF_MY_WAY and
+  # CS_CONFIG_ALLOW_ANY_SIGNATURE without that flag is kept.
+  "amfi_get_out_of_my_way=1",
+  # l30: return to the bootloader 150 s after launchd starts, so a test run
+  # needs no power-button hold. The log tick flushes before the reset.
+  "miro-autoreset=150",
+]
+
+[payload.adt]
+# A software identity seed for IOPlatformUUID, not an Apple chip id. The
+# platform seed itself is not stored in any repository.
+chip_id = "208"
+# The DarwinBoot contiguous window request: 256 MiB was measured to allocate on
+# this phone; 1 GiB was never observed to be allocatable.
+owned_memory_size = "0x10000000"
+# UUID of the root volume, read out of the OS image the "linux" partition
+# carries (APSB superblock at 0x3e1c400 of 044-76040-038.dmg).
+root_match_volume_uuid = "04769D26-2CA0-4825-B443-E2E5F88300F2"
+packed_data_ramdisk = true
+unique_chip_id = "required"
+
+[adt]
+[adt.chosen.u32]
+# This board prelinks no AMFI, so there is no platform-code policy to restrict.
+amfi-only-platform-code = 0
+
+[adt.product.string]
+model = "xiaomi,miro"
+
+[adt.product.u32]
+thin-bezel = 1
+
+[adt.defaults.u32]
+# Suspend/resume is not implemented for this board.
+sleep-disabled = 1
+
+[adt.buttons]
+[adt.buttons.string]
+compatible = "buttons"
+device_type = "buttons"
+
+[adt.buttons.strings]
+button-names = ["hold", "voldown", "volup"]
+
+[adt.buttons.u32]
+home-button-type = 2

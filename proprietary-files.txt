@@ -1,0 +1,9 @@
+# Firmware paths and SHA-256 digests for scripts/extract-files.py.
+# Files are written under .cache/firmware/.
+# Format: path|sha256. Prefix a path with - for an optional file.
+#
+# No vendor firmware file is consumed by this board's XNU build yet. The UEFI
+# firmware keeps its vendor binaries in the uefi-miro checkout (Binaries,
+# branch miro), not here. Add entries when a selected component needs firmware:
+#   GPU  - signed ZAP and GPU firmware for the A830 (no driver yet)
+#   touch - Synaptics TCM firmware image (no driver yet)

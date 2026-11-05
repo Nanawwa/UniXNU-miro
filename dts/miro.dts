@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: BSD-2-Clause-Patent
+//
+// Redmi K80 Pro (miro) hardware description for the common ADT generator.
+// The SoC DTSI owns CPU topology, GIC and controller registers; this board
+// adds its memory, reservations and ADT exports.
+/dts-v1/;
+
+/include/ "sm8750.dtsi"
+
+/ {
+    model = "Redmi K80 Pro";
+    compatible = "xiaomi,miro", "qcom,sm8750";
+    #address-cells = <2>;
+    #size-cells = <2>;
+
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x0 0x80000000 0x0 0x80000000>;
+    };
+
+    reserved-memory {
+        #address-cells = <2>;
+        #size-cells = <2>;
+        ranges;
+
+        /* Handed over live by the firmware GOP: 1200x2670 at 0xfc800000. */
+        splash_region: framebuffer@fc800000 {
+            label = "cont_splash_region";
+            reg = <0x0 0xfc800000 0x0 0x2b00000>;
+            no-map;
+        };
+    };
+};
+
+&{/cpus} {
+    timebase-frequency = <19200000>;
+};
+
+&gic {
+    /* Distributor + one 2 MiB redistributor region: 8 cores at a 0x40000 stride. */
+    reg = <0x0 0x16000000 0x0 0x10000>, <0x0 0x16080000 0x0 0x200000>;
+    redistributor-stride = <0x40000>;
+};
+
+&ufs {
+    status = "okay";
+};

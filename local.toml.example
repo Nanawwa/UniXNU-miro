@@ -1,0 +1,9 @@
+# Local overrides. Copy this file to local.toml, which Git ignores.
+#
+# A local SoC checkout avoids a network fetch while developing and makes
+# "unixnu status" report origin = local. Published builds use the pins in
+# feeds.toml; record any local revision in porting.toml evidence.
+[[source]]
+name = "sm8750"
+kind = "soc"
+local = "../UniXNU-sm8750-common"

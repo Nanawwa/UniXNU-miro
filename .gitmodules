@@ -1,0 +1,48 @@
+# Component checkouts of this board, named by their canonical catalog IDs
+# (UniXNU/components.toml). UniXNU resolves a selected component from the
+# device module first, so these pins are the revisions this board builds with.
+#
+# The remaining checkouts are generic UniXNU components. drivers/MiroUfs is the
+# board's own UFS driver, carried in-tree instead of as a submodule: it is the
+# SM8750 fork of the sheng transport (docs/ufs-miro.md). Publish it as its own
+# repository before pinning it. The sheng-only GPU and touch checkouts were
+# removed with the fork.
+[submodule "drivers/ArmCpu"]
+	path = drivers/ArmCpu
+	url = https://github.com/UniXNU/ArmCpu.git
+[submodule "drivers/ArmDTPlatform"]
+	path = drivers/ArmDTPlatform
+	url = https://github.com/UniXNU/ArmDTPlatform.git
+[submodule "drivers/ArmVirtPlatform"]
+	path = drivers/ArmVirtPlatform
+	url = https://github.com/UniXNU/ArmVirtPlatform.git
+[submodule "drivers/DarwinBoot"]
+	path = drivers/DarwinBoot
+	url = https://github.com/UniXNU/DarwinBoot.git
+[submodule "drivers/AppleKeyStoreState"]
+	path = drivers/AppleKeyStoreState
+	url = https://github.com/UniXNU/AppleKeyStoreState.git
+[submodule "drivers/GopFramebuffer"]
+	path = drivers/GopFramebuffer
+	url = https://github.com/UniXNU/GopFramebuffer.git
+[submodule "drivers/QcomGeniSpi"]
+	path = drivers/QcomGeniSpi
+	url = https://github.com/UniXNU/QcomGeniSpi.git
+[submodule "drivers/RamBlock"]
+	path = drivers/RamBlock
+	url = https://github.com/UniXNU/RamBlock.git
+[submodule "drivers/SoftwareAES"]
+	path = drivers/SoftwareAES
+	url = https://github.com/UniXNU/SoftwareAES.git
+[submodule "drivers/VirtioMmioBlock"]
+	path = drivers/VirtioMmioBlock
+	url = https://github.com/UniXNU/VirtioMmioBlock.git
+[submodule "drivers/VirtioMmioConsole"]
+	path = drivers/VirtioMmioConsole
+	url = https://github.com/UniXNU/VirtioMmioConsole.git
+[submodule "kits/VerifiedRoot"]
+	path = kits/VerifiedRoot
+	url = https://github.com/UniXNU/VerifiedRoot.git
+[submodule "kits/XnuPrelink"]
+	path = kits/XnuPrelink
+	url = https://github.com/UniXNU/XnuPrelink.git
