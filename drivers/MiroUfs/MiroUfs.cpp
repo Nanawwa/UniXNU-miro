@@ -1479,6 +1479,16 @@ extern "C" int native_ufs_log_probe (uint32_t status, const char *why)
   block[13] = gLogRegionBlocks ? 1 : 0;
   block[14] = gHost.ready ? 1 : 0;
   block[15] = (uint8_t)(gLogReopenCount > 255 ? 255 : gLogReopenCount);
+  extern unsigned gLogWriteCalls, gLogWriteFailures;
+  extern uint32_t gLogWriteLastStatus;
+  extern uint64_t gLogWriteLastLba;
+  block[88] = (uint8_t)(gLogWriteCalls > 255 ? 255 : gLogWriteCalls);
+  block[89] = (uint8_t)(gLogWriteFailures > 255 ? 255 : gLogWriteFailures);
+  block[90] = (uint8_t)(gLogWriteLastStatus & 0xff);
+  for (unsigned i = 0; i < 8; i++) block[91 + i] = (uint8_t)(gLogWriteLastLba >> (8 * i));
+  // exact geometry so a reader never has to guess the log region location
+  for (unsigned i = 0; i < 8; i++) block[99 + i] = (uint8_t)(gLogRegionFirst >> (8 * i));
+  for (unsigned i = 0; i < 8; i++) block[107 + i] = (uint8_t)(gStoreGeometry.last >> (8 * i));
   for (unsigned i = 0; i < 8; ++i) block[16 + i] = uint8_t (last >> (8 * i));
   if (why) { unsigned i = 0; while (i < 64 && why[i]) { block[24 + i] = uint8_t (why[i]); ++i; } }
   return hostWrite4k (0, window, 1, block) == kIOReturnSuccess;

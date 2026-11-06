@@ -1,6 +1,6 @@
 --- a/bsd/kern/kern_exec.c
 +++ b/bsd/kern/kern_exec.c
-@@ -7035,6 +7035,13 @@
+@@ -7035,6 +7035,14 @@
  volatile int native_owner_cache_readonly = 0;
  volatile int native_owner_cache_authorized = 0;
  volatile int native_owner_cache_root_recheck = 0;
@@ -10,6 +10,7 @@
 +char native_owner_cache_lib_names[64] = {0};
 +char native_owner_cache_dyld_names[96] = {0};
 +char native_owner_cache_names_src[16] = {0};
++char native_owner_cache_env[192] = {0};
 +volatile uint32_t native_owner_cache_file_mask = 0;
  volatile uint64_t native_owner_cache_actual_mount_flags = 0;
  volatile uintptr_t native_owner_cache_original_root = 0;
@@ -59,7 +60,7 @@
  static int
  native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -7062,11 +7107,72 @@
+@@ -7062,11 +7107,78 @@
  #endif
  	const char *mountpoint = "/";
  #else
@@ -106,11 +107,17 @@
 +			 *
 +			 * A runtime vnode_lookup probe here was tried and it stalled the boot
 +			 * at the entry-probe stage bars, so the path is fixed instead. */
-+			size_t mount_len = strlen(mountpoint);
-+			while (mount_len > 1 && mountpoint[mount_len - 1] == '/') mount_len--;
++			/* A union mount uses mountpoint "/", so "%s/System/..." would
++			 * produce "//System/...". Use no prefix at all for the root.
++			 * The cryptex carries dyld_shared_cache_arm64 under
++			 * Caches/com.apple.dyld (proven by file mask bit3); the
++			 * /System/Library/dyld directory holds only arm64.N shards
++			 * and no arm64e cache, so pointing there makes dyld report
++			 * "no dyld cache" and launchd cannot load libSystem.B.dylib. */
++			const char *prefix = (strcmp(mountpoint, "/") == 0) ? "" : mountpoint;
 +			snprintf(environment, sizeof(environment),
-+			    "DYLD_SHARED_CACHE_DIR=%.*s/System/Library/dyld",
-+			    (int)mount_len, mountpoint);
++			    "DYLD_SHARED_CACHE_DIR=%s/System/Library/Caches/com.apple.dyld",
++			    prefix);
 +		}
 +	}
 +	/* l34: dyld knows why it is not mapping the cache; ask it. Gated on a
@@ -154,7 +161,7 @@
  	struct mount_args request = {.type = scratch + 0x100, .path = scratch + 0x120,
  	    .flags = MNT_RDONLY, .data = scratch + 0x200};
  	request.flags = (int)mount_flags;
-@@ -7141,17 +7217,140 @@
+@@ -7141,17 +7217,141 @@
  	cache_authorized = cache_authorized && native_union;
  #endif
  	if (!cache_authorized) { error = EAUTH; goto done; }
@@ -254,6 +261,7 @@
 +	}
 +	native_owner_cache_stage = 5;
 +	/* l35: what launchd is actually about to receive. */
++	strlcpy(native_owner_cache_env, environment, sizeof(native_owner_cache_env));
 +	printf("MIRO-ENV verbose=%d cache=%s print=[%s] trace=[%s]\n",
 +	    dyld_verbose_on, environment, environment_print, environment_trace);
 +	printf("MIRO-ENV scratch: env=0x%llx print=0x%llx trace=0x%llx\n",
@@ -782,7 +790,7 @@
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1695,6 +1767,132 @@
+@@ -1695,6 +1767,148 @@
  
  static TUNABLE(bool, panic_on_crash_disabled, "panic_on_crash_disabled", false);
  
@@ -837,7 +845,7 @@
 +			return;
 +		}
 +	}
-+	char text[1024];
++	char text[8192];
 +	int at = 0;
 +#define MIRO_APPEND(...) \
 +	do { \
@@ -884,6 +892,22 @@
 +	    (unsigned long long)native_data_persist_errors);
 +	if (prefix) {
 +		MIRO_APPEND("prefix: %s\n", prefix);
++	}
++	/* dyld diagnosis, in the one channel every unattended round reads back. */
++	{
++		extern volatile int native_owner_cache_path_mask;
++		extern volatile uint32_t native_owner_cache_file_mask;
++		extern volatile int native_owner_cache_native_union;
++		extern char native_owner_cache_names_src[16];
++		extern char native_owner_cache_lib_names[64];
++		extern char native_owner_cache_dyld_names[96];
++		extern char native_owner_cache_env[192];
++		MIRO_APPEND("DYLD ENV: %s\n", native_owner_cache_env);
++		MIRO_APPEND("cache masks: path=0x%x file=0x%x union=%d src=%s\n",
++		    native_owner_cache_path_mask, native_owner_cache_file_mask,
++		    native_owner_cache_native_union, native_owner_cache_names_src);
++		MIRO_APPEND("System/Library: %s\n", native_owner_cache_lib_names);
++		MIRO_APPEND("dyld dir: %s\n", native_owner_cache_dyld_names);
 +	}
 +#undef MIRO_APPEND
 +	native_ufs_panic_write(text, (unsigned long)at);

@@ -304,6 +304,10 @@ static bool hostLogOpen (uint64_t first, uint64_t blocks)
   return true;
 }
 
+extern "C" unsigned gLogWriteCalls = 0;
+extern "C" unsigned gLogWriteFailures = 0;
+extern "C" uint32_t gLogWriteLastStatus = 0;
+extern "C" uint64_t gLogWriteLastLba = 0;
 static bool hostInWindow (uint64_t lba, uint32_t blocks)
 {
   if (gStoreOpen && lba >= gStoreFirst && lba - gStoreFirst < gStoreBlocks && blocks <= gStoreBlocks - (lba - gStoreFirst)) return true;
@@ -329,6 +333,8 @@ static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const v
   if (!gHost.ready || !src || !blocks || blocks > kDataMax / 4096 || lun != 0 || !hostInWindow (lba, blocks)) {
     return kIOReturnBadArgument;
   }
+  gLogWriteCalls++;
+  gLogWriteLastLba = lba;
   IOLockLock (gHost.lock);
   gRootDiagnostic.lba = lba;
   memcpy (gHost.virt + kDataOffset, src, blocks * 4096U);
@@ -337,6 +343,8 @@ static IOReturn hostWrite4k (uint8_t lun, uint64_t lba, uint32_t blocks, const v
   uint32_t scsi = 0;
   IOReturn status = hostScsiDir (0, cdb, 10, 1, blocks * 4096U, 2000000, &scsi);
   IOLockUnlock (gHost.lock);
+  gLogWriteLastStatus = (uint32_t)status;
+  if (status != kIOReturnSuccess) gLogWriteFailures++;
   return status;
 }
 
