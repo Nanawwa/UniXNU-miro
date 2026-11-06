@@ -1,0 +1,64 @@
+Fix the FAT volume-label comparison width in UniXNU's RamDiskDxe
+
+Applies to UniXNU/package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c
+and UniXNU/package/UniXNUPkg/Library/UniXNULib/Config.c.
+
+EspAt() identifies the payload volume by comparing the FAT BPB label field:
+
+    return (CompareMem (Bpb + 0x47, ESP_LABEL, 8) == 0) ||
+           (CompareMem (Bpb + 0x36, ESP_LABEL, 8) == 0);
+
+The BPB label is an 8-byte, space-padded field, and CompareMem always reads 8
+bytes, so ESP_LABEL has to be exactly 8 characters with no terminator inside
+that window. The board was ported from a tree where the label was DADA2ESP -
+eight characters, which happened to satisfy the constraint. Renaming the
+volume to MIROESP leaves a 7-character literal, so the 8th byte compared is
+the string's NUL terminator while the BPB holds a space. The comparison can
+never match, the driver publishes no volume, the menu falls back to its
+built-in configuration (four action entries, no kernel), and the phone powers
+off for lack of an OS.
+
+Symptom on screen, before the fix:
+
+    built-in . v9 h5CC5000 t1 f0 iD5EC6000+21322000 pB0070000
+    drivers 0 loaded / 0 failed   kits 0
+
+f0 is the FAT verdict (no volume found). After the fix the same boot reaches
+the kernel and its framebuffer.
+
+The same commit restores the built-in menu timeout, which an earlier debugging
+session had raised to 600 s. With no payload the menu then sits for ten
+minutes instead of ten seconds, which reads as a hang.
+
+diff --git a/package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c b/package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c
+--- a/package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c
++++ b/package/UniXNUPkg/Driver/UniXNURamDiskDxe/UniXNURamDiskDxe.c
+@@ -436,7 +436,10 @@
+ #define KERNEL_WINDOW_SIZE   0x10000000ULL
+ #define ESP_SCAN_STEP        0x1000ULL
+-#define ESP_LABEL            "MIROESP"
++// The FAT BPB volume label is an 8-byte space-padded field, so the literal
++// must be exactly 8 bytes: a shorter string adds a NUL that never matches.
++#define ESP_LABEL            "MIROESP "
+ 
+ STATIC
+ UINT64
+@@ -470,6 +473,7 @@
+ 
+   Bpb = (CONST UINT8 *)(UINTN)Start;
++  STATIC_ASSERT (sizeof (ESP_LABEL) - 1 == 8, "the label must fill the 8-byte BPB field");
+   return (CompareMem (Bpb + 0x47, ESP_LABEL, 8) == 0) ||
+          (CompareMem (Bpb + 0x36, ESP_LABEL, 8) == 0);
+ }
+diff --git a/package/UniXNUPkg/Library/UniXNULib/Config.c b/package/UniXNUPkg/Library/UniXNULib/Config.c
+--- a/package/UniXNUPkg/Library/UniXNULib/Config.c
++++ b/package/UniXNUPkg/Library/UniXNULib/Config.c
+@@ -35,7 +35,7 @@
+ STATIC CONST CHAR8  mBuiltinConfig[] =
+   "version = 1\n"
+   "[boot]\n"
+-  "timeout = 600\n"
++  "timeout = 10\n"
+   "rotate = 2\n"
+   "[ui]\n"
+   "title = \"UniXNU\"\n"

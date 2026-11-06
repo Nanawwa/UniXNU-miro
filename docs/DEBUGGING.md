@@ -83,6 +83,35 @@ print(blob.count(b"DADA2ESP"))   # 解压后才能看到
 
 跑自动化时**只留一个** watcher，并在启动新脚本前 `pkill` 旧的（注意 `pkill -f` 可能匹配到自己所在的 ssh 命令行，把会话杀掉）。
 
+## 坑 7：定长字段与字符串字面量
+
+FAT 卷标是 **8 字节、空格填充** 的定长字段，而 C 字符串字面量会在末尾附一个 `\0`。这两件事一旦相遇，长度恰好差一就静默失败：
+
+```c
+CompareMem (Bpb + 0x47, ESP_LABEL, 8)     // 固定读 8 字节
+```
+
+| 字面量 | 字面量内容 | 第 8 字节 | 匹配 `MIROESP␣␣␣␣` |
+| --- | --- | --- | --- |
+| `"DADA2ESP"` | 8 字符 + `\0` | `S` | 是（恰好 8 字符） |
+| `"MIROESP"` | 7 字符 + `\0` | `\0` | **否** |
+| `"MIROESP "` | 8 字符 + `\0` | 空格 | 是 |
+
+从 `DADA2ESP` 改名到 `MIROESP` 时，标识符少了一个字符，比较就永远不成立。**改名前是"刚好能用"的状态，改名把隐藏的宽度假设暴露出来。**
+
+这个 bug 的表现是固件静默退回内置配置：菜单只剩 `Return to Firmware / Restart / Power off / Tools`，屏幕角落一行 `built-in ... f0`（`f0` = FAT 卷校验失败），`drivers 0 loaded`。看起来像更早期的固件版本，实际是"找不到 payload 卷"的 fallback。
+
+修法不只是补空格，还要让编译器守住这个不变量：
+
+```c
+#define ESP_LABEL "MIROESP "
+STATIC_ASSERT (sizeof (ESP_LABEL) - 1 == 8, "the label must fill the 8-byte BPB field");
+```
+
+**通用判据**：凡是 `memcmp` / `CompareMem` 带显式长度的地方，检查两侧的宽度从哪来——定长字段（BPB、分区表、UUID、magic）和 C 字符串字面量不是同一回事。改名字、改常量、改配置时，先看有没有 `sizeof` / 定长比较依赖它。
+
+同类陷阱：`StrCatS` 的容量参数、`snprintf` 的缓冲区边界、协议头的固定字段。
+
 ## 坑 6：reader 必须刷 DTBO
 
 reader 的无 DTBO 启动会卡在 UFS 初始化（屏幕停在 `UFSDBG:` 序列），USB 永远起不来，主机侧看到的是 "No route to host"——很容易误判成"手机关机了"。
