@@ -59,6 +59,8 @@ boot XNU image → crash or timed autoreset (miro-autoreset) → ABL lands in fa
 | netconsole | Pre-UFS early boot | UDP 6666 to the debug host; needs the kernel up but not storage |
 | Screen | Firmware menu, panic screen | The one channel that needs eyes |
 
+The full method write-up - how to tell which layer died, what the static checks cover, and the traps that cost real time here - is in [docs/DEBUGGING.md](docs/DEBUGGING.md).
+
 Kernel arguments live in `board.toml` (`[payload] kernel_args`): `miro-log=1` opens the ring, `miro-data-persist=2` opens the Data store, `miro-no-cs=1` stands in for the StaticTrustCache during bring-up, `miro-dyld-verbose=1` injects `DYLD_PRINT_*` into launchd's environment, `miro-autoreset=<s>` returns to the bootloader after launchd starts.
 
 ## Layout
