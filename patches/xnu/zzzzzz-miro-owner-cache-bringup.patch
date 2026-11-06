@@ -758,7 +758,7 @@
 + *
 + * With panic_on_crash_disabled=1 nothing panics but initproc, so a process
 + * that dies early only prints "Too many corpses being created" and its reason
-+ * is lost. native_ufs_panic_write() writes a MIROPNC1 record into the board's
++ * is lost. native_ufs_panic_write() writes a DADAPNC1 record (historical magic, kept on the medium) into the board's
 + * unencrypted `oops` partition, which fastboot can fetch back without root.
 + *
 + * Only the processes whose death means the boot failed are recorded, and only
