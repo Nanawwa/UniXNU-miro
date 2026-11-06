@@ -59,7 +59,7 @@
  static int
  native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -7062,11 +7107,42 @@
+@@ -7062,11 +7107,72 @@
  #endif
  	const char *mountpoint = "/";
  #else
@@ -80,9 +80,39 @@
 -#if !defined(XNU_OWNER_UNION_SYSTEMOS) || !XNU_OWNER_UNION_SYSTEMOS
 -	const char *environment = "DYLD_SHARED_CACHE_DIR=/private/preboot/System/Library/Caches/com.apple.dyld";
 -#endif
++	/* The mountpoint is "/" for a union-mounted SystemOS, so "%s/System/..."
++	 * produced "//System/..." and dyld never found the cache. Strip a trailing
++	 * slash from the mountpoint instead of assuming it has none.
++	 *
++	 * miro-no-cache-dir=1 leaves the variable out entirely. The cryptex carries
++	 * dyld_shared_cache_arm64 (no e) in Caches/, while dyld itself looks for
++	 * dyld_shared_cache_arm64e in /System/Library/dyld/ and in the Cryptexes
++	 * path - both of which the board's own probe finds. Forcing the Caches
++	 * directory therefore points dyld at a cache it will not use, and its own
++	 * search is what finds the arm64e one. */
 +	char environment[192];
-+	snprintf(environment, sizeof(environment),
-+	    "DYLD_SHARED_CACHE_DIR=%s/System/Library/Caches/com.apple.dyld", mountpoint);
++	{
++		uint32_t skip_cache_dir = 0;
++		int no_cache_dir = PE_parse_boot_argn("miro-no-cache-dir", &skip_cache_dir,
++		    sizeof(skip_cache_dir)) && skip_cache_dir;
++		if (no_cache_dir) {
++			environment[0] = 0;
++		} else {
++			/* Point dyld at the directory that carries dyld_shared_cache_arm64e.
++			 * The board's diagnostics found it under /System/Library/dyld and the
++			 * Cryptexes path, but NOT under Caches/com.apple.dyld (which only has
++			 * the arm64 name, and dyld rejects that, then reports "no dyld
++			 * cache" and launchd cannot load libSystem.B.dylib).
++			 *
++			 * A runtime vnode_lookup probe here was tried and it stalled the boot
++			 * at the entry-probe stage bars, so the path is fixed instead. */
++			size_t mount_len = strlen(mountpoint);
++			while (mount_len > 1 && mountpoint[mount_len - 1] == '/') mount_len--;
++			snprintf(environment, sizeof(environment),
++			    "DYLD_SHARED_CACHE_DIR=%.*s/System/Library/dyld",
++			    (int)mount_len, mountpoint);
++		}
++	}
 +	/* l34: dyld knows why it is not mapping the cache; ask it. Gated on a
 +	 * boot argument so an ordinary boot keeps the console quiet. */
 +	char environment_print[64];
@@ -269,7 +299,7 @@
  	native_owner_cache_stage = 6;
  done:
  	if (mounted_root) vnode_put(mounted_root);
-@@ -7165,11 +7364,22 @@
+@@ -7165,11 +7364,25 @@
  #endif
  #if defined(XNU_OWNER_CACHE_STARTUP) && XNU_OWNER_CACHE_STARTUP
  	if (!error && cache_authorized && root_recheck) {
@@ -279,19 +309,22 @@
 +		/* Original dyld bit 3 selects no ignition. miro l32: that bit is now a
 +		 * decision instead of a side effect, because dyld's own strings show the
 +		 * consequence ("ignition disabled" then "no shared cache in cryptex").
-+		 * Default stays as before; miro-dyld-ignition=1 lets dyld use ignition.
-+		 * The config gate is kept so DATA_MOUNT -> BOOT_MANIFEST -> CACHE_STARTUP
-+		 * still builds. */
-+		uint32_t allow_ignition = 0;
-+		int ignition_opt_in = PE_parse_boot_argn("miro-dyld-ignition", &allow_ignition,
-+		    sizeof(allow_ignition)) && allow_ignition;
-+		if (!ignition_opt_in) {
++		 * Ignition stays on by default: bit 3 ("no ignition") is the
++		 * configuration l30 measured as failing - dyld then skips the
++		 * shared-cache mapping and vm_shared_region_start_address() fails on
++		 * every exec. miro-dyld-no-ignition=1 suppresses it for a comparison
++		 * run. The config gate is kept so DATA_MOUNT -> BOOT_MANIFEST ->
++		 * CACHE_STARTUP still builds. */
++		uint32_t suppress_ignition = 0;
++		int ignition_off = PE_parse_boot_argn("miro-dyld-no-ignition", &suppress_ignition,
++		    sizeof(suppress_ignition)) && suppress_ignition;
++		if (ignition_off) {
 +			dyld_flags |= UINT64_C(8);
 +		}
  		commpage_update_dyld_flags(dyld_flags);
  		native_owner_cache_dyld_flags = dyld_flags;
-+		printf("MIRO-DYLDFLAGS ignition_opt_in=%d flags=0x%llx (bit3=no-ignition)\n",
-+		    ignition_opt_in, (unsigned long long)dyld_flags);
++		printf("MIRO-DYLDFLAGS ignition_off=%d flags=0x%llx (bit3=no-ignition)\n",
++		    ignition_off, (unsigned long long)dyld_flags);
  	}
  #endif
  	native_owner_cache_authorized = cache_authorized;

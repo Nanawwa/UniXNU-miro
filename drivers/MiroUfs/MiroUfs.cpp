@@ -1396,6 +1396,8 @@ extern "C" int native_ufs_store_sync (void)
 // ---- Diagnostic log window (miro-log=1) ---------------------------------------------------------------------------
 // A board log writer gets the last kLogReserveBlocks of the root partition and the kExportBlocks below them, refused
 // unless the partition holds them clear of the flashed root image plus a 4 MiB guard. Off without the boot argument.
+// Counts idempotent reopens, so the probe record can show the writer did attach.
+extern "C" unsigned gLogReopenCount = 0;
 static unsigned logMode (void)
 {
   static int cached = -1;
@@ -1414,7 +1416,15 @@ extern "C" int native_ufs_log_open (uint64_t *firstLba, uint64_t *blocks, const 
   int ok = 0;
   if (!logMode ()) reason = "off";
   else if (!gStoreGeometry.valid || !gHost.ready) reason = "no root layout";
-  else if (gLogRegionBlocks) reason = "already open";
+  else if (gLogRegionBlocks) {
+    /* bsd_init opened the window first; hand the same geometry back instead of
+     * failing. BootLog.c otherwise substitutes its own default size with
+     * first_lba = 0, which makes the header lie about where the ring lives. */
+    gLogReopenCount++;
+    if (firstLba) *firstLba = gLogRegionFirst;
+    if (blocks) *blocks = gLogRegionBlocks;
+    ok = 1;
+  }
   else {
     uint64_t partition = gStoreGeometry.last - gStoreGeometry.first + 1;
     uint64_t imageBlocks = (gStoreGeometry.imageBytes + 4095) / 4096;
@@ -1468,6 +1478,7 @@ extern "C" int native_ufs_log_probe (uint32_t status, const char *why)
   block[12] = gStoreGeometry.valid ? 1 : 0;
   block[13] = gLogRegionBlocks ? 1 : 0;
   block[14] = gHost.ready ? 1 : 0;
+  block[15] = (uint8_t)(gLogReopenCount > 255 ? 255 : gLogReopenCount);
   for (unsigned i = 0; i < 8; ++i) block[16 + i] = uint8_t (last >> (8 * i));
   if (why) { unsigned i = 0; while (i < 64 && why[i]) { block[24 + i] = uint8_t (why[i]); ++i; } }
   return hostWrite4k (0, window, 1, block) == kIOReturnSuccess;
