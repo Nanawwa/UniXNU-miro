@@ -60,7 +60,7 @@
  static int
  native_owner_cache_prepare(proc_t p, user_addr_t scratch, user_addr_t *envp)
  {
-@@ -7062,11 +7107,78 @@
+@@ -7062,11 +7107,88 @@
  #endif
  	const char *mountpoint = "/";
  #else
@@ -107,17 +107,27 @@
 +			 *
 +			 * A runtime vnode_lookup probe here was tried and it stalled the boot
 +			 * at the entry-probe stage bars, so the path is fixed instead. */
-+			/* A union mount uses mountpoint "/", so "%s/System/..." would
-+			 * produce "//System/...". Use no prefix at all for the root.
-+			 * The cryptex carries dyld_shared_cache_arm64 under
-+			 * Caches/com.apple.dyld (proven by file mask bit3); the
-+			 * /System/Library/dyld directory holds only arm64.N shards
-+			 * and no arm64e cache, so pointing there makes dyld report
-+			 * "no dyld cache" and launchd cannot load libSystem.B.dylib. */
-+			const char *prefix = (strcmp(mountpoint, "/") == 0) ? "" : mountpoint;
-+			snprintf(environment, sizeof(environment),
-+			    "DYLD_SHARED_CACHE_DIR=%s/System/Library/Caches/com.apple.dyld",
-+			    prefix);
++			/* Default: leave the variable out. In union mode SystemOS is
++			 * mounted over /, so dyld's own default path
++			 * /System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64
++			 * resolves through the union. This matches UniXNU alioth, which
++			 * boots the same 21H461 profile to the home screen with
++			 * OWNER_UNION_SYSTEMOS=y and no cache-dir override.
++			 * Verified here: with the override set, launchd dies at pid 1 with
++			 * namespace 6 (DYLD) and "no dyld cache"; without it, the process
++			 * table reaches watchdogd pid 137 and launchd runs.
++			 * miro-force-cache-dir=1 restores the override for comparison. */
++			uint32_t force = 0;
++			int want_override = PE_parse_boot_argn("miro-force-cache-dir", &force,
++			    sizeof(force)) && force;
++			if (want_override) {
++				const char *prefix = (strcmp(mountpoint, "/") == 0) ? "" : mountpoint;
++				snprintf(environment, sizeof(environment),
++				    "DYLD_SHARED_CACHE_DIR=%s/System/Library/Caches/com.apple.dyld",
++				    prefix);
++			} else {
++				environment[0] = 0;
++			}
 +		}
 +	}
 +	/* l34: dyld knows why it is not mapping the cache; ask it. Gated on a
@@ -792,7 +802,7 @@
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1695,6 +1767,148 @@
+@@ -1695,6 +1767,150 @@
  
  static TUNABLE(bool, panic_on_crash_disabled, "panic_on_crash_disabled", false);
  
@@ -913,11 +923,13 @@
 +	}
 +#undef MIRO_APPEND
 +	native_ufs_panic_write(text, (unsigned long)at);
-+	/* Unattended debugging: the launchd failure is on the medium now, so
++	/* Unattended debugging: the crash record is on the medium now, so
 +	 * return to fastboot on its own. The old timer lived in the log tick,
 +	 * which never runs because the MIROLOG2 ring has never been written.
-+	 * No thread, no callout, no UFS write needed here. */
-+	if (p == initproc) {
++	 * No thread, no callout, no UFS write needed here. Any critical daemon
++	 * (launchd, SpringBoard, watchdogd) qualifies: once dyld works, the
++	 * next failure is a daemon, not initproc. */
++	if (critical) {
 +		uint32_t seconds = 0;
 +		if (PE_parse_boot_argn("miro-autoreset", &seconds, sizeof(seconds)) && seconds) {
 +			uint64_t freq = 0, start = 0, now = 0;
