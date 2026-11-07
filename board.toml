@@ -199,6 +199,10 @@ kernel_args = [
   # argument that sets CS_CONFIG_GET_OUT_OF_MY_WAY and
   # CS_CONFIG_ALLOW_ANY_SIGNATURE without that flag is kept.
   "amfi_get_out_of_my_way=1",
+  # Match UniXNU alioth (same 21H461 profile, real device to the home screen):
+  # liveactivitiesd/cryptexd/routined have nothing to do on this board and
+  # their crash loop fills the launchd corpse table before SpringBoard starts.
+  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
   # l30: return to the bootloader 150 s after launchd starts, so a test run
   # needs no power-button hold. The log tick flushes before the reset.
   "miro-autoreset=150",

@@ -46,9 +46,35 @@ fault_command = [str(fault_source) if arg == str(source) else str(fault_obj) if 
 result = subprocess.run(fault_command, cwd=record['directory'], capture_output=True, text=True, timeout=120)
 if result.returncode:
     raise SystemExit(result.stdout[-4000:] + result.stderr[-4000:])
+# The launchd disabled-jobs policy must be linked even with BOOT_PROGRESS off:
+# the board keeps CONFIG_XNU_BOOT_PROGRESS=n, so build-boot-progress.py never
+# runs and _sheng_boot_watchdog_policy would otherwise be undefined.
+policy_source = ROOT / 'kits/miro/BootWatchdogPolicy.c'
+policy_obj = OUT / 'BootWatchdogPolicy.o'
+policy_record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/kern_exec.o.json').read_text().strip().rstrip(','))
+policy_args = policy_record['arguments']
+policy_command = []
+j = 0
+while j < len(policy_args):
+    arg = policy_args[j]
+    if arg == policy_record['file']:
+        policy_command.append(str(policy_source))
+    elif arg in ('-o', '-MF', '-MT', '-MJ'):
+        if arg == '-o':
+            policy_command += ['-o', str(policy_obj)]
+        j += 1
+    elif arg == '-Xclang' and policy_args[j + 1].startswith('-W'):
+        j += 1
+    elif not arg.startswith('-W'):
+        policy_command.append(arg)
+    j += 1
+policy_command += ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror']
+result = subprocess.run(policy_command, cwd=policy_record['directory'], capture_output=True, text=True, timeout=120)
+if result.returncode:
+    raise SystemExit(result.stdout[-4000:] + result.stderr[-4000:])
 archive = OUT / 'libMiroBootLog.a'
 archive.unlink(missing_ok=True)
-subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(proc_obj), str(fault_obj)], check=True)
+subprocess.run(['xcrun', 'ar', 'rcs', str(archive), str(obj), str(proc_obj), str(fault_obj), str(policy_obj)], check=True)
 (OUT / 'build-report.json').write_text(json.dumps({
     'source_sha256': __import__('hashlib').sha256(source.read_bytes()).hexdigest(),
     'archive_sha256': __import__('hashlib').sha256(archive.read_bytes()).hexdigest(),

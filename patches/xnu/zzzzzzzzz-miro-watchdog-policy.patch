@@ -1,0 +1,27 @@
+Run the launchd disabled-jobs policy without requiring BOOT_PROGRESS.
+
+UniXNU's zzz-boot-progress.patch wraps sheng_boot_watchdog_policy() in
+"#if XNU_BOOT_PROGRESS". This board keeps CONFIG_XNU_BOOT_PROGRESS=n because
+the drawing path needs the audited Virtio block build, so the policy never
+runs and sheng-disable-jobs has no effect. alioth (same 21H461 profile, real
+device to the home screen) has BOOT_PROGRESS=y specifically so the policy can
+disable liveactivitiesd/cryptexd/routined and stop the daemon crash storm.
+
+sheng_boot_watchdog_policy() itself only writes disabled.plist through plain
+syscalls; it has no dependency on the boot-progress drawing code. Remove the
+two guard lines so the policy runs whenever Data mount is enabled. The two
+boot_progress_stage calls remain - they are weak stubs when BOOT_PROGRESS is
+off.
+--- a/bsd/kern/kern_exec.c
++++ b/bsd/kern/kern_exec.c
+@@ -8638,10 +8638,8 @@
+ 	if (data_error) panic("offline scratch Data mount failed: %d", data_error);
+-#if defined(XNU_BOOT_PROGRESS) && XNU_BOOT_PROGRESS
+ 	extern int sheng_boot_watchdog_policy(void *, uint64_t);
+ 	boot_progress_stage("temporary watchdog launch policy enter");
+ 	int policy_error=sheng_boot_watchdog_policy(p, (uint64_t)scratch_addr);
+ 	if (policy_error) panic("sheng watchdog launch policy failed: %d", policy_error);
+ 	boot_progress_stage("temporary watchdog launch policy ready");
+-#endif
+ #endif
+ #if CONFIG_MEMORYSTATUS
