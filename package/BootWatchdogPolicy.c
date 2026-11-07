@@ -62,6 +62,47 @@ static int append_job(const char **cursor) {
  *cursor=*e?e+1:e;return 0;
 }
 
+// Measured on device: /private/var/mobile and /private/var/mobile/Library/Caches
+// are root-owned (0755) while SpringBoard runs as 501, so its MappedImageCache
+// write fails with EACCES and BaseBoardUI traps. /private/var/mobile/Library
+// already measured 501, so only the two mismatched levels need fixing. Create
+// the cache chain too. Runs before launchd execs; /private/var stays root.
+static int miro_fix_mobile_dirs(proc_t p,uint64_t scratch) {
+ static const char *const own[]={
+  "/private/var/mobile",
+  "/private/var/mobile/Library",
+  "/private/var/mobile/Library/Caches"};
+ static const char *const dirs[]={
+  "/private/var/mobile/Library/Caches/MappedImageCache",
+  "/private/var/mobile/Library/Caches/MappedImageCache/Persistent"};
+ int error=0;
+ for(unsigned i=0;i<sizeof(own)/sizeof(own[0]);++i) {
+  int32_t result=0,fd=-1;
+  if((error=copyout(own[i],scratch,strlen(own[i])+1)))goto done;
+  struct open_args op={.path=scratch,.flags=O_RDONLY|O_DIRECTORY|O_NOFOLLOW,.mode=0};
+  if((error=open(p,&op,&result)))goto done;
+  fd=result;
+  struct fchown_args owner={.fd=fd,.uid=501,.gid=501};
+  error=fchown(p,&owner,&result);
+  struct close_args cl={.fd=fd};
+  int e=sys_close(p,&cl,&result);
+  if(!error)error=e;
+  if(error)goto done;
+ }
+ for(unsigned i=0;i<sizeof(dirs)/sizeof(dirs[0]);++i) {
+  int32_t result=0;
+  if((error=copyout(dirs[i],scratch,strlen(dirs[i])+1)))goto done;
+  struct mkdir_args md={.path=scratch,.mode=0777};
+  error=mkdir(p,&md,&result);
+  if(error==EEXIST)error=0;
+  if(error)goto done;
+ }
+ done:
+ if(error)printf("miro mobile dirs failed: %d\n",error);
+ else printf("miro mobile dirs ready (uid 501)\n");
+ return error;
+}
+
 int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  proc_t p=process;
  int enabled=0,error=0,fd=-1;int32_t result=0;
@@ -81,6 +122,7 @@ int sheng_boot_watchdog_policy(void *process, uint64_t scratch) {
  }
  if(setup==1)printf("sheng setup flags reset: Hello page on this boot\n");
  if(!enabled && !jobs[0] && !lite)return 0;
+ if(miro_fix_mobile_dirs(p,scratch)) { /* keep going */ }
  policy[0]=0;strlcat(policy,policy_head,sizeof(policy));
  if(enabled)strlcat(policy,policy_watchdogd,sizeof(policy));
  if(lite)for(const char *c=lite_jobs;*c;) {if((error=append_job(&c)))return error;}
