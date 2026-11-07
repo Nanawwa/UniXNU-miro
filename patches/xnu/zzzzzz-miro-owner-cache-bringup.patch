@@ -802,7 +802,7 @@
  int
  exit1(proc_t p, int rv, int *retval)
  {
-@@ -1695,6 +1767,150 @@
+@@ -1695,6 +1767,155 @@
  
  static TUNABLE(bool, panic_on_crash_disabled, "panic_on_crash_disabled", false);
  
@@ -920,6 +920,11 @@
 +		    native_owner_cache_native_union, native_owner_cache_names_src);
 +		MIRO_APPEND("System/Library: %s\n", native_owner_cache_lib_names);
 +		MIRO_APPEND("dyld dir: %s\n", native_owner_cache_dyld_names);
++		MIRO_APPEND("crashed processes: ");
++		for (unsigned i = 0; i < seen_count; i++) {
++			MIRO_APPEND("%s(%d) ", seen[i].name, seen[i].count);
++		}
++		MIRO_APPEND("\n");
 +	}
 +#undef MIRO_APPEND
 +	native_ufs_panic_write(text, (unsigned long)at);
