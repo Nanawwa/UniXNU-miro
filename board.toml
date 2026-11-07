@@ -187,7 +187,7 @@ kernel_args = [
   "panic_on_crash_disabled=1",
   "ml-timeout-lock-panic-scale=40",
   # Bring-up only: clears ip_mac_return and ip_cs_error at the exec gate
-  # (patches/xnu/zzzzzzzzzzzzzzz-miro-no-cs-bringup.patch). A real StaticTrustCache is the faithful fix.
+  # (miro-no-cs bring-up guard, now part of 01-amfi-bringup-guards.patch). A real StaticTrustCache is the faithful fix.
   "miro-no-cs=1",
   # l20/l21: the sibling K60 port traced a daemon death storm to the sandbox
   # policy answering ENOPOLICY(159) for every __mac_syscall. It uses

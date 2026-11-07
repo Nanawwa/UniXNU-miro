@@ -20,16 +20,18 @@ export UNIXNU_KERNELCACHE=<主仓库>/out/ipsw/21H461/kernelcache.decompressed
 
 ## 内核补丁
 
-`patches/xnu/` 只有本机型的四个补丁，按 `patches/xnu/series` 的顺序应用；arch / SoC / OS profile 三层来自各自的仓库，由 `unixnu` 驱动拼装，不要在设备仓库里复制基础补丁。
+`patches/xnu/` 是本机型自己的补丁，按 `patches/xnu/series` 的**逐行顺序**应用（不按文件名排序，名字只是语义标签）；arch / SoC / OS profile 三层来自各自的仓库，由 `unixnu` 驱动拼装，不要在设备仓库里复制基础补丁。
 
 | 补丁 | 覆盖内容 |
 | --- | --- |
-| `zzzz-miro-amfi-bringup-guards.patch` | 无 AMFI 预链接时的空指针防护、root 鉴权门、entitlement 加速 |
-| `zzzzz-miro-cache-path.patch` | owner cache 路径计算 |
-| `zzzzzz-miro-owner-cache-bringup.patch` | owner cache 带启动：诊断探针、环境向量、dyld ignition 开关 |
-| `zzzzzzz-miro-ufs-log.patch` | UFS 日志环与崩溃记录（`MIROLOG2` / `MIROPNC1` 格式） |
+| `01-amfi-bringup-guards.patch` | 无 AMFI 预链接时的空指针防护、root 鉴权门、entitlement 加速、`miro-no-cs` 签名放行 |
+| `02-owner-cache-path.patch` | owner cache / dyld 共享缓存路径计算 |
+| `03-owner-cache-bringup.patch` | owner cache 带启动、dyld 诊断探针、崩溃记录、critical daemon 定时复位 |
+| `04-ufs-console-log.patch` | 内核 printf 控制台环、oops 快照（`MIROLOG2` / `DADAPNC1` 格式）、panic hook |
+| `05-launchd-job-policy.patch` | 去掉 `XNU_BOOT_PROGRESS` guard，让 `sheng-disable-jobs` 策略生效 |
+| `06-crash-registers.patch` | 在 `proc_prepareexit` 把崩溃进程的 sig / PC / LR / FP / bt 打到控制台 |
 
-改内核的流程：直接改构建树里的 `.cache/xnu-work`（补丁已应用），验证后再把改动整理回 `patches/xnu/`。整理方法：先重放基础三层补丁得到"补丁前"的树，再对触碰过的文件做 diff。不要手改补丁的上下文行。
+改内核的流程：从 `UniXNU/out/feeds/<xnu-rev>/` 取原始文件，在临时 git 仓里按顺序应用 `series` 全部补丁，改完用 `git diff` 生成新补丁——**hunk 头一律由 git 生成，不要手数行数**。也可以直接在构建树 `.cache/xnu-work` 上验证改动，再按同样方式回写补丁。
 
 ## 已知的坑
 
@@ -40,7 +42,7 @@ export UNIXNU_KERNELCACHE=<主仓库>/out/ipsw/21H461/kernelcache.decompressed
 
 ## 调试循环
 
-崩溃取证不拍照：内核 panic 写 `oops` 分区（16 MiB，未加密），PSCI 定时复位回 fastboot，Linux reader 镜像把分区拉回来解析。reader 和无人值守脚本在 [UniXNU-miro-linux](https://github.com/Nanawwa/UniXNU-miro-linux)。日志格式见 `zzzzzzz-miro-ufs-log.patch` 和 reader 的解析脚本，两边必须同步改。
+崩溃取证不拍照：内核 panic 写 `oops` 分区（16 MiB，未加密），PSCI 定时复位回 fastboot，Linux reader 镜像把分区拉回来解析。reader 和无人值守脚本在 [UniXNU-miro-linux](https://github.com/Nanawwa/UniXNU-miro-linux)。日志格式见 `04-ufs-console-log.patch` 和 reader 的解析脚本，两边必须同步改。
 
 启动参数速查（完整表在 `board.toml`）：`miro-log=1` 开日志环；`miro-data-persist=2` 开 Data 存储窗口；`miro-no-cs=1` 是带启动用的签名放行，正式方案是 StaticTrustCache；`miro-autoreset=<秒>` 定时回 fastboot；`miro-dyld-ignition=1` / `miro-dyld-verbose=1` 控制 dyld ignition 与诊断。
 

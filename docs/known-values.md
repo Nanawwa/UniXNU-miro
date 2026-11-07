@@ -363,8 +363,8 @@ reaches step 7.
 
 Step 7 and step 8 are the same AMFI wall from different callers: exec asks AMFI for entitlements,
 and an ioctl path asks `IOUserClient` for them. This kernel prelinks no AMFI, so `amfi` is NULL.
-`patches/xnu/zzzzz-miro-entitlements-without-amfi.patch` and
-`patches/xnu/zzzzzz-miro-more-amfi-null-guards.patch` return "not entitled" (or no data) at every
+`the AMFI-free entitlement guard (now part of 01-amfi-bringup-guards.patch)` and
+`the additional NULL-AMFI guards (now part of 01-amfi-bringup-guards.patch)` return "not entitled" (or no data) at every
 reachable site instead of dereferencing NULL. That is a bring-up guard, not a security policy; the
 proper fix is the owner-root path with AMFI and PMGR prelinked.
 
@@ -393,7 +393,7 @@ With the lock initialised, `launchd` was killed by an exec policy failure:
 `EXEC_EXIT_REASON_SECURITY_POLICY`, and no description, which is the `imgp->ip_mac_return` path:
 AMFI's signature hook rejected the init binary because no StaticTrustCache is packaged.
 
-`patches/xnu/zzzzzzzzzzzzzzz-miro-no-cs-bringup.patch` clears `ip_mac_return` and the `ip_cs_error`
+`the miro-no-cs bring-up guard (now part of 01-amfi-bringup-guards.patch)` clears `ip_mac_return` and the `ip_cs_error`
 reason when the boot argument `miro-no-cs=1` is present (it is in the payload arguments). This is a
 bring-up bypass, not policy: it only affects the exec gate and the board must be given a real
 `StaticTrustCache.img4` (IPSW component, not in the local cache) for a faithful boot.
@@ -491,7 +491,7 @@ This board enables it in bring-up mode:
 The mount helper picks the first existing mount point from `/System/Cryptexes/OS`,
 `/private/preboot/Cryptexes/OS` and `/private/preboot`, and builds `DYLD_SHARED_CACHE_DIR` from it.
 `/System/Cryptexes/OS` and `/private/preboot/Cryptexes/OS` land the volume exactly on the paths the
-kernel already probes (`vm_unix.c` `scdir_path`); `zzzzzzz-miro-cache-path.patch` additionally adds
+kernel already probes (`vm_unix.c` `scdir_path`); `02-owner-cache-path.patch` additionally adds
 `/private/preboot/System/Library/Caches/com.apple.dyld` so the last resort also maps. The volume lookup matches the
 IOMedia `UUID` first and falls back to the SystemOS media size (3,303,014,400 bytes); the device
 number comes from a `/dev/<bsd-name>` lookup. If the mount still fails, `load_init_program()` panics
