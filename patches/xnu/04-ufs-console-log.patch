@@ -1,8 +1,8 @@
 diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
-index aeac9d3..7964480 100644
+index aeac9d3..a3cbcd8 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -862,12 +862,205 @@ conslog_putc(char c)
+@@ -862,12 +862,240 @@ conslog_putc(char c)
  #endif
  }
  
@@ -94,6 +94,33 @@ index aeac9d3..7964480 100644
 + * console through console_write(); cons_putc_locked()'s only caller is the
 + * kernel debugger, so a ring appended there never sees a kernel message.
 + */
++/* Size-triggered flush into the oops partition. The tick that used to own this
++ * never runs on this board, and the reset-thread flush needs a live system, so
++ * a boot that hangs before launchd used to leave no log at all. oops is its own
++ * 16 MiB partition, so this writes nothing into userdata. */
++#define MIRO_OOPS_CHUNK (48 * 1024)
++static volatile int miro_oops_busy;
++static uint32_t miro_oops_seq;
++
++static void
++miro_log_oops_flush(void)
++{
++	extern int native_ufs_oops_log_write(uint32_t, const char *, uint32_t)
++	    __attribute__((weak_import));
++	size_t len = miro_log_len;
++	size_t start;
++	if (!&native_ufs_oops_log_write || !len || miro_oops_busy) {
++		return;
++	}
++	miro_oops_busy = 1;
++	/* Send the newest slice only: earlier text already went out on the last
++	 * trigger, and the driver rotates its own slots. */
++	start = len > MIRO_OOPS_CHUNK ? len - MIRO_OOPS_CHUNK : 0;
++	native_ufs_oops_log_write(++miro_oops_seq, miro_log_ring + start,
++	    (uint32_t)(len - start));
++	miro_oops_busy = 0;
++}
++
 +void
 +miro_log_append(const char *str, int size)
 +{
@@ -107,6 +134,14 @@ index aeac9d3..7964480 100644
 +		}
 +		miro_log_ring[at] = str[i];
 +		miro_log_len = at + 1;
++	}
++	/* Throttle by volume, not by time: a hanging boot tells its whole story in
++	 * a second or two. Blocking context only - the UFS writer cannot run from
++	 * an interrupt, and must not recurse into its own printf output. */
++	if (miro_log_len >= MIRO_OOPS_CHUNK &&
++	    (miro_log_len % MIRO_OOPS_CHUNK) < (size_t) size &&
++	    get_preemption_level() == 0) {
++		miro_log_oops_flush();
 +	}
 +}
 +
@@ -208,7 +243,7 @@ index aeac9d3..7964480 100644
  __printflike(1, 0)
  static int
  vprintf_internal(const char *fmt, va_list ap_in, void *caller)
-@@ -884,7 +1077,7 @@ vprintf_internal(const char *fmt, va_list ap_in, void *caller)
+@@ -884,7 +1112,7 @@ vprintf_internal(const char *fmt, va_list ap_in, void *caller)
  #pragma clang diagnostic pop
  
  		console_printbuf_state_init(&info_data, TRUE, TRUE);
