@@ -1,6 +1,8 @@
+diff --git a/osfmk/kern/printf.c b/osfmk/kern/printf.c
+index aeac9d3..7964480 100644
 --- a/osfmk/kern/printf.c
 +++ b/osfmk/kern/printf.c
-@@ -862,12 +862,194 @@
+@@ -862,12 +862,205 @@ conslog_putc(char c)
  #endif
  }
  
@@ -21,7 +23,7 @@
 +volatile int miro_prev_state;
 +char miro_log_ring[MIRO_LOG_BYTES];
 +volatile size_t miro_log_len;
-+volatile int miro_log_enabled;
++volatile int miro_log_enabled = 1;  /* miro-log=1 is always on for bring-up; the ring is diagnostic only */
 +volatile int miro_log_open_status;
 +volatile uint64_t miro_log_first_lba;
 +volatile long long miro_log_value;
@@ -106,6 +108,17 @@
 +		miro_log_ring[at] = str[i];
 +		miro_log_len = at + 1;
 +	}
++}
++
++/* Every kernel printf goes through vprintf_internal's putc callback. Capture
++ * each character before the console sees it; cons_putc_locked() only carries
++ * the kernel debugger's output. */
++static void
++miro_printbuf_putc(int ch, void *arg)
++{
++	char c = (char) ch;
++	miro_log_append(&c, 1);
++	console_printbuf_putc(ch, arg);
 +}
 +
 +/*
@@ -195,9 +208,20 @@
  __printflike(1, 0)
  static int
  vprintf_internal(const char *fmt, va_list ap_in, void *caller)
+@@ -884,7 +1077,7 @@ vprintf_internal(const char *fmt, va_list ap_in, void *caller)
+ #pragma clang diagnostic pop
+ 
+ 		console_printbuf_state_init(&info_data, TRUE, TRUE);
+-		__doprnt(fmt, ap, console_printbuf_putc, &info_data, 16, TRUE);
++		__doprnt(fmt, ap, miro_printbuf_putc, &info_data, 16, TRUE);
+ 		console_printbuf_clear(&info_data);
+ 
+ 		va_end(ap);
+diff --git a/pexpert/arm/hwtrace/hwtrace.c b/pexpert/arm/hwtrace/hwtrace.c
+index 3ba6b91..2631fdc 100644
 --- a/pexpert/arm/hwtrace/hwtrace.c
 +++ b/pexpert/arm/hwtrace/hwtrace.c
-@@ -493,12 +493,15 @@
+@@ -493,12 +493,15 @@ PE_singlestep_hook(void)
  {
  }
  

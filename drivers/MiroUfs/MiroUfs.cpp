@@ -1594,10 +1594,30 @@ static uint64_t gAutoResetStart = 0;
 // no critical exit would otherwise leave the phone in Android with no way for
 // the auto-loop to boot the reader. IOSleep yields the CPU, so launchd and
 // SpringBoard keep running until the deadline.
+// The console ring lives in the XNU patch, not this driver. It is a global so
+// the linker resolves it; one fixed OOPSLOG1 slot carries this round's console.
+extern char miro_log_ring[];
+extern volatile size_t miro_log_len;
+extern "C" int native_ufs_oops_log_write (uint32_t sequence, const char *text, uint32_t length);
+
 static void autoResetThread (void *argument, wait_result_t)
 {
   uint32_t seconds = static_cast<uint32_t> (reinterpret_cast<uintptr_t> (argument));
   IOSleep (seconds * 1000);
+  // 0x4d49524f is a fixed slot selector, not a round counter: every boot
+  // overwrites the same slot, so the reader always sees the latest console.
+  // Keep the tail: the slot is ~60 KiB, the ring is 256 KiB, and the useful
+  // lines (dyld, launchd, SpringBoard) are the most recent ones.
+  size_t len = miro_log_len;
+  const char *text = miro_log_ring;
+  const size_t room = 15 * 4096;
+  if (len > room) { text += len - room; len = room; }
+  if (len) {
+    native_ufs_oops_log_write (0x4d49524f, text, (uint32_t) len);
+  } else {
+    static const char empty[] = "MIRO-SNAPSHOT: console ring empty\n";
+    native_ufs_oops_log_write (0x4d49524f, empty, (uint32_t) (sizeof (empty) - 1));
+  }
   register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;
   register uint64_t x1 __asm__ ("x1") = 0;
   register uint64_t x2 __asm__ ("x2") = 0;

@@ -202,7 +202,7 @@ kernel_args = [
   # Match UniXNU alioth (same 21H461 profile, real device to the home screen):
   # liveactivitiesd/cryptexd/routined have nothing to do on this board and
   # their crash loop fills the launchd corpse table before SpringBoard starts.
-  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
+  "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined,com.apple.PerfPowerServices,com.apple.coreduetd",
   # alioth (same 21H461): watchdogd has no IOWatchdog hardware service here, so
   # it BRKs/sig5 the moment launchd starts it. Do not load the job at all.
   "sheng-disable-watchdogd=1",
