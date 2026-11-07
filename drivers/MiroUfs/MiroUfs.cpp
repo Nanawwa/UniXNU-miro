@@ -1588,9 +1588,26 @@ extern "C" int native_ufs_oops_log_read (char *dst, uint32_t room, uint32_t *rou
 static uint64_t gAutoResetTicks = 0;
 static uint64_t gAutoResetStart = 0;
 
+// Unattended fallback: a detached kernel thread that sleeps and then resets,
+// independent of whether any daemon crashes. The old poll() only ran from the
+// MIROLOG2 log tick, which never fires on this board; a stable userspace with
+// no critical exit would otherwise leave the phone in Android with no way for
+// the auto-loop to boot the reader. IOSleep yields the CPU, so launchd and
+// SpringBoard keep running until the deadline.
+static void autoResetThread (void *argument, wait_result_t)
+{
+  uint32_t seconds = static_cast<uint32_t> (reinterpret_cast<uintptr_t> (argument));
+  IOSleep (seconds * 1000);
+  register uint64_t x0 __asm__ ("x0") = 0x84000009ULL;
+  register uint64_t x1 __asm__ ("x1") = 0;
+  register uint64_t x2 __asm__ ("x2") = 0;
+  register uint64_t x3 __asm__ ("x3") = 0;
+  __asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) :: "memory");
+}
+
 extern "C" void native_ufs_autoreset_arm (uint32_t seconds)
 {
-  if (!seconds) return;
+  if (!seconds || gAutoResetTicks) return;
   uint64_t freq = 0;
   __asm__ volatile ("mrs %0, cntfrq_el0" : "=r" (freq));
   if (!freq) freq = 19200000;
@@ -1598,6 +1615,11 @@ extern "C" void native_ufs_autoreset_arm (uint32_t seconds)
   __asm__ volatile ("mrs %0, cntpct_el0" : "=r" (now));
   gAutoResetStart = now;
   gAutoResetTicks = static_cast<uint64_t> (seconds) * freq;
+  thread_t thread = nullptr;
+  if (kernel_thread_start (autoResetThread,
+      reinterpret_cast<void *> (static_cast<uintptr_t> (seconds)), &thread) == KERN_SUCCESS) {
+    thread_deallocate (thread);
+  }
 }
 
 // Called from the log tick. Returns 1 when the reset has been asked for (it does not return in practice).

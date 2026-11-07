@@ -203,6 +203,11 @@ kernel_args = [
   # liveactivitiesd/cryptexd/routined have nothing to do on this board and
   # their crash loop fills the launchd corpse table before SpringBoard starts.
   "sheng-disable-jobs=com.apple.liveactivitiesd,com.apple.cryptexd,com.apple.routined",
+  # alioth (same 21H461): watchdogd has no IOWatchdog hardware service here, so
+  # it BRKs/sig5 the moment launchd starts it. Do not load the job at all.
+  "sheng-disable-watchdogd=1",
+  # Keep a batch of network/account/photo daemons off on a fresh Data.
+  "sheng-lite=1",
   # l30: return to the bootloader 150 s after launchd starts, so a test run
   # needs no power-button hold. The log tick flushes before the reset.
   "miro-autoreset=60",
