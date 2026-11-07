@@ -38,7 +38,7 @@ if [ -z "${UNIXNU_PATCH_LIST:-}" ]; then
   echo '  run ./unixnu kernel instead of invoking this script directly.' >&2
   exit 1
 fi
-if [ false ]; then
+if false; then
 # The optional observation hooks overlap existing root/exec patch context.
 # Remove them first so earlier independent patches retain their idempotent checks.
 # The same holds for the boot-time GPU addon mount and the staged system apps copy (zzy), which edit the owner Data mount function
